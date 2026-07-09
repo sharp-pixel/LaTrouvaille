@@ -1,0 +1,65 @@
+# Executable against the lexical mapping in retail-search-prototype today.
+allowed_indexes:
+  - secondhand_items_current
+
+allowed_search_pipelines: []
+
+allowed_fields:
+  - item_id
+  - brand
+  - brand.keyword
+  - title
+  - title.keyword
+  - description
+  - canonical_text
+  - category
+  - size
+  - price
+  - old_price
+  - country
+  - condition
+  - material
+  - color
+  - image
+  - badge
+  - reasons
+  - availability
+  - shipping
+  - seller_id
+  - seller_tier
+  - seller_score
+  - listed_at
+  - quality_score
+  - freshness_score
+  - vector_text
+
+allowed_query_types:
+  - bool
+  - match
+  - multi_match
+  - range
+  - rank_feature
+  - term
+  - terms
+
+forbidden_keys:
+  - painless
+  - query_string
+  - regexp
+  - script
+  - script_score
+  - wildcard
+
+allowed_constraint_ops:
+  - eq
+  - gt
+  - gte
+  - lt
+  - lte
+  - term
+  - terms
+
+max_size: 50
+max_from: 1000
+max_k: 500
+max_query_clauses: 100

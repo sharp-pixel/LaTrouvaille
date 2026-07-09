@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=82"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secondhand-query-understanding"
+version = "0.1.0"
+description = "QLoRA fine-tuning and validation tools for persona-aware retail query understanding."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Search / Personalization Engineering" }]
+dependencies = [
+  "pydantic>=2.13,<3",
+  "pyyaml>=6.0.3,<7",
+  "typer>=0.26,<1",
+]
+
+[project.scripts]
+quft = "query_understanding.cli:app"
+
+[dependency-groups]
+dev = [
+  "mypy>=2.2,<3",
+  "pytest>=9.1,<10",
+  "pytest-cov>=7,<8",
+  "ruff>=0.15,<1",
+  "types-pyyaml>=6.0.12.20250915",
+]
+train = [
+  "accelerate>=1.14,<2",
+  "bitsandbytes>=0.49.2,<1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "datasets>=5,<6",
+  "mistral-common>=1.11,<2",
+  "peft>=0.19.1,<1",
+  "safetensors>=0.7,<1",
+  "torch==2.11.0",
+  "transformers>=5.13,<6",
+  "trl>=1.8,<2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+markers = [
+  "gpu: requires an NVIDIA GPU and the train dependency group",
+  "integration: requires an external service such as OpenSearch",
+  "model: downloads model metadata or weights",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["accelerate.*", "datasets.*", "peft.*", "torch.*", "transformers.*", "trl.*"]
+ignore_missing_imports = true
+follow_imports = "skip"

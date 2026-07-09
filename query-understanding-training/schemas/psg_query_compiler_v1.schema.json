@@ -1,0 +1,341 @@
+{
+  "$defs": {
+    "Constraint": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "term",
+            "terms",
+            "eq",
+            "gt",
+            "gte",
+            "lt",
+            "lte"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "title": "Constraint",
+      "type": "object"
+    },
+    "Constraints": {
+      "additionalProperties": false,
+      "properties": {
+        "filters": {
+          "items": {
+            "$ref": "#/$defs/Constraint"
+          },
+          "title": "Filters",
+          "type": "array"
+        },
+        "must_not": {
+          "items": {
+            "$ref": "#/$defs/Constraint"
+          },
+          "title": "Must Not",
+          "type": "array"
+        }
+      },
+      "title": "Constraints",
+      "type": "object"
+    },
+    "Expertise": {
+      "enum": [
+        "novice",
+        "intermediate",
+        "expert"
+      ],
+      "title": "Expertise",
+      "type": "string"
+    },
+    "JsonValue": {},
+    "MentalModelWeights": {
+      "additionalProperties": false,
+      "properties": {
+        "craftsmanship": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Craftsmanship",
+          "type": "number"
+        },
+        "heritage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Heritage",
+          "type": "number"
+        },
+        "novelty": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Novelty",
+          "type": "number"
+        },
+        "performance": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Performance",
+          "type": "number"
+        },
+        "quiet_luxury": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Quiet Luxury",
+          "type": "number"
+        },
+        "utility": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Utility",
+          "type": "number"
+        },
+        "value_retention": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Value Retention",
+          "type": "number"
+        },
+        "visible_status": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Visible Status",
+          "type": "number"
+        }
+      },
+      "required": [
+        "quiet_luxury",
+        "visible_status",
+        "craftsmanship",
+        "performance",
+        "utility",
+        "heritage",
+        "novelty",
+        "value_retention"
+      ],
+      "title": "MentalModelWeights",
+      "type": "object"
+    },
+    "OpenSearchRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Body",
+          "type": "object"
+        },
+        "index": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Index",
+          "type": "string"
+        },
+        "search_pipeline": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Search Pipeline"
+        }
+      },
+      "required": [
+        "index",
+        "body"
+      ],
+      "title": "OpenSearchRequest",
+      "type": "object"
+    },
+    "QueryType": {
+      "enum": [
+        "lookup",
+        "comparison",
+        "recommendation",
+        "exploratory_search",
+        "filter_refinement"
+      ],
+      "title": "QueryType",
+      "type": "string"
+    },
+    "ResolutionWeights": {
+      "additionalProperties": false,
+      "properties": {
+        "brand": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Brand",
+          "type": "number"
+        },
+        "category": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Category",
+          "type": "number"
+        },
+        "collection": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Collection",
+          "type": "number"
+        },
+        "model_line": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Model Line",
+          "type": "number"
+        },
+        "reference": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Reference",
+          "type": "number"
+        },
+        "variant": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Variant",
+          "type": "number"
+        }
+      },
+      "required": [
+        "category",
+        "brand",
+        "collection",
+        "model_line",
+        "reference",
+        "variant"
+      ],
+      "title": "ResolutionWeights",
+      "type": "object"
+    },
+    "Rewrites": {
+      "additionalProperties": false,
+      "properties": {
+        "embedding_query": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Embedding Query",
+          "type": "string"
+        },
+        "keyword_query": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Keyword Query",
+          "type": "string"
+        },
+        "negative_query": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Negative Query",
+          "type": "string"
+        }
+      },
+      "required": [
+        "embedding_query",
+        "keyword_query"
+      ],
+      "title": "Rewrites",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Category",
+      "type": "string"
+    },
+    "clarification_needed": {
+      "title": "Clarification Needed",
+      "type": "boolean"
+    },
+    "clarification_question": {
+      "anyOf": [
+        {
+          "maxLength": 1000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Clarification Question"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "constraints": {
+      "$ref": "#/$defs/Constraints"
+    },
+    "mental_model_weights": {
+      "$ref": "#/$defs/MentalModelWeights"
+    },
+    "opensearch": {
+      "$ref": "#/$defs/OpenSearchRequest"
+    },
+    "query_type": {
+      "$ref": "#/$defs/QueryType"
+    },
+    "raw_query": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Raw Query",
+      "type": "string"
+    },
+    "resolution_weights": {
+      "$ref": "#/$defs/ResolutionWeights"
+    },
+    "rewrites": {
+      "$ref": "#/$defs/Rewrites"
+    },
+    "schema_version": {
+      "const": "psg_query_compiler_v1",
+      "default": "psg_query_compiler_v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "user_expertise": {
+      "$ref": "#/$defs/Expertise"
+    }
+  },
+  "required": [
+    "raw_query",
+    "category",
+    "query_type",
+    "user_expertise",
+    "confidence",
+    "clarification_needed",
+    "resolution_weights",
+    "mental_model_weights",
+    "rewrites",
+    "constraints",
+    "opensearch"
+  ],
+  "title": "QueryCompilerOutput",
+  "type": "object"
+}

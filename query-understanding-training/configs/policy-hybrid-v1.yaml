@@ -1,0 +1,60 @@
+# Future design-document profile. Do not execute it until the hybrid mapping and
+# psg-hybrid-v1 search pipeline exist in OpenSearch.
+allowed_indexes:
+  - products_v1
+
+allowed_search_pipelines:
+  - psg-hybrid-v1
+
+allowed_fields:
+  - product_id
+  - category
+  - brand
+  - collection
+  - model_line
+  - reference
+  - variant
+  - title
+  - description
+  - searchable_text
+  - price.value
+  - price.currency
+  - availability
+  - attributes.*
+  - concept_scores.*
+  - embedding_neutral
+  - embedding_category
+  - embedding_resolution_*
+
+allowed_query_types:
+  - bool
+  - hybrid
+  - knn
+  - match
+  - multi_match
+  - neural
+  - range
+  - term
+  - terms
+
+forbidden_keys:
+  - painless
+  - query_string
+  - regexp
+  - script
+  - script_score
+  - wildcard
+
+allowed_constraint_ops:
+  - eq
+  - gt
+  - gte
+  - lt
+  - lte
+  - term
+  - terms
+
+max_size: 50
+max_from: 1000
+max_k: 500
+max_query_clauses: 100

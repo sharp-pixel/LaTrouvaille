@@ -1,0 +1,87 @@
+[
+  {
+    "id": "dress-watch",
+    "any": ["dress watch", "dress watches", "formal watch", "formal watches", "suit watch", "tuxedo watch"],
+    "rewrite": "formal dress watch leather strap suit tuxedo",
+    "synonyms": ["formal watch", "suit watch", "tuxedo watch", "leather strap watch", "manual wind", "ultra thin"],
+    "filters": [{ "field": "category", "values": ["Watches"] }],
+    "boosts": [
+      { "field": "reasons", "phrase": "Dress watch", "weight": 16 },
+      { "field": "title", "phrase": "dress watch", "weight": 14 },
+      { "field": "title", "phrase": "Calatrava", "weight": 12 },
+      { "field": "title", "phrase": "Patrimony", "weight": 12 },
+      { "field": "title", "phrase": "Classique", "weight": 10 },
+      { "field": "title", "phrase": "De Ville", "weight": 8 },
+      { "field": "title", "phrase": "Reverso", "weight": 8 }
+    ],
+    "bury": [{ "field": "category", "value": "Dresses", "weight": 0.2 }]
+  },
+  {
+    "id": "cartier-tank-watch",
+    "all": ["cartier", "tank"],
+    "rewrite": "cartier tank francaise steel watch",
+    "synonyms": ["tank francaise", "cartier tank", "dress watch"],
+    "filters": [{ "field": "category", "values": ["Watches"] }],
+    "boosts": [
+      { "field": "title", "phrase": "Tank Francaise", "weight": 12 },
+      { "field": "brand", "phrase": "CARTIER", "weight": 8 }
+    ],
+    "bury": [{ "field": "condition", "value": "Fair condition", "weight": 0.35 }]
+  },
+  {
+    "id": "chanel-bag",
+    "all": ["chanel", "bag"],
+    "rewrite": "chanel quilted leather flap bag",
+    "synonyms": ["flap bag", "boy bag", "quilted bag"],
+    "filters": [{ "field": "category", "values": ["Bags"] }],
+    "boosts": [
+      { "field": "title", "phrase": "quilted", "weight": 8 },
+      { "field": "material", "phrase": "Leather", "weight": 4 }
+    ]
+  },
+  {
+    "id": "silk-dress",
+    "all": ["silk", "dress"],
+    "rewrite": "silk evening dress",
+    "synonyms": ["slip dress", "evening dress", "maxi dress"],
+    "filters": [
+      { "field": "category", "values": ["Dresses"] },
+      { "field": "material", "values": ["Silk"] }
+    ],
+    "boosts": [{ "field": "title", "phrase": "Silk slip dress", "weight": 8 }]
+  },
+  {
+    "id": "hermes-birkin",
+    "all": ["hermes", "birkin"],
+    "rewrite": "hermes birkin 30 togo leather bag",
+    "synonyms": ["birkin 30", "togo leather", "investment bag"],
+    "filters": [{ "field": "category", "values": ["Bags"] }],
+    "boosts": [
+      { "field": "title", "phrase": "Birkin", "weight": 16 },
+      { "field": "material", "phrase": "Leather", "weight": 4 }
+    ],
+    "bury": [{ "field": "condition", "value": "Fair condition", "weight": 0.5 }]
+  },
+  {
+    "id": "patek-calatrava",
+    "all": ["patek", "calatrava"],
+    "rewrite": "patek philippe calatrava manual wind watch",
+    "synonyms": ["dress watch", "manual wind", "calatrava"],
+    "filters": [{ "field": "category", "values": ["Watches"] }],
+    "boosts": [
+      { "field": "brand", "phrase": "PATEK PHILIPPE", "weight": 12 },
+      { "field": "title", "phrase": "Calatrava", "weight": 16 }
+    ]
+  },
+  {
+    "id": "leather-boots",
+    "all": ["leather", "boots"],
+    "rewrite": "leather boots",
+    "synonyms": ["riding boots", "ankle boots"],
+    "filters": [
+      { "field": "category", "values": ["Shoes"] },
+      { "field": "material", "values": ["Leather"] }
+    ],
+    "boosts": [{ "field": "title", "phrase": "boots", "weight": 7 }]
+  }
+]

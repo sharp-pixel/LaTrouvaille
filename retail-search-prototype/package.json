@@ -1,0 +1,25 @@
+{
+  "name": "retail-search-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "opensearch:index": "node scripts/index-opensearch.mjs",
+    "opensearch:create-ubi": "node scripts/create-ubi-indexes.mjs",
+    "opensearch:bootstrap": "npm run opensearch:create-ubi && npm run opensearch:index",
+    "search:api": "node scripts/search-api.mjs",
+    "query:rewriter": "node scripts/tier2-rewriter.mjs",
+    "ubi:collector": "node scripts/ubi-collector.mjs"
+  },
+  "dependencies": {
+    "@opensearch-project/opensearch": "^3.6.0",
+    "@vitejs/plugin-react": "5.0.4",
+    "lucide-react": "^1.23.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "vite": "6.4.2"
+  }
+}

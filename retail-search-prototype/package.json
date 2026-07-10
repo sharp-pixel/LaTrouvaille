@@ -12,6 +12,7 @@
     "opensearch:bootstrap": "npm run opensearch:create-ubi && npm run opensearch:index",
     "search:api": "node scripts/search-api.mjs",
     "query:rewriter": "node scripts/tier2-rewriter.mjs",
+    "query:mistral": "node scripts/mistral-query-understanding.mjs",
     "ubi:collector": "node scripts/ubi-collector.mjs"
   },
   "dependencies": {

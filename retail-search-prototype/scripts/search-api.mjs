@@ -9,6 +9,9 @@ const trackTotalHits =
   process.env.OPENSEARCH_TRACK_TOTAL_HITS === "true" ? true : Number(process.env.OPENSEARCH_TRACK_TOTAL_HITS || 10000);
 const queryRewriteEndpoint = process.env.QUERY_REWRITE_ENDPOINT || "http://127.0.0.1:8791/rewrite";
 const queryRewriteTimeoutMs = Number(process.env.QUERY_REWRITE_TIMEOUT_MS || 20);
+const mistralMode = process.env.MISTRAL_QUERY_UNDERSTANDING_MODE || "off";
+const mistralEndpoint = process.env.MISTRAL_QUERY_UNDERSTANDING_ENDPOINT || "http://127.0.0.1:8792/understand";
+const mistralTimeoutMs = Number(process.env.MISTRAL_QUERY_UNDERSTANDING_TIMEOUT_MS || 900);
 
 const client = new Client({
   node: process.env.OPENSEARCH_URL || "http://127.0.0.1:9200",
@@ -108,6 +111,35 @@ function addTier2Burials(should, tier2Rewrite) {
   });
 }
 
+function applyMistralFilters(filter, filters, mistralUnderstanding) {
+  if (mistralMode !== "active" || mistralUnderstanding?.status !== "applied") return;
+  for (const constraint of mistralUnderstanding.compiler?.constraints?.filters || []) {
+    if (filters?.[constraint.field]?.length) continue;
+    if (constraint.field === "price" && ["gte", "lte"].includes(constraint.op)) {
+      filter.push({ range: { price: { [constraint.op]: Number(constraint.value) } } });
+      continue;
+    }
+    if (["brand", "category", "condition", "country", "material"].includes(constraint.field)) {
+      const values = Array.isArray(constraint.value) ? constraint.value : [constraint.value];
+      if (values.length) filter.push({ terms: { [constraint.field]: keywordValues(values) } });
+    }
+  }
+}
+
+function addMistralRewrite(should, mistralUnderstanding) {
+  if (mistralMode !== "active" || mistralUnderstanding?.status !== "applied") return;
+  const keywordQuery = mistralUnderstanding.compiler?.rewrites?.keyword_query;
+  if (!keywordQuery) return;
+  should.push({
+    multi_match: {
+      query: keywordQuery,
+      fields: ["brand^6", "title^5", "category^3", "material^2", "color", "description", "canonical_text"],
+      operator: "or",
+      boost: 1.5,
+    },
+  });
+}
+
 function addPhraseIntentBoosts(should, phraseIntents = []) {
   phraseIntents.forEach((intent) => {
     const phrases = [...new Set([intent.label, intent.matchedPhrase, ...(intent.phrases || [])].filter(Boolean))];
@@ -123,8 +155,12 @@ function addPhraseIntentBoosts(should, phraseIntents = []) {
   });
 }
 
-function buildQuery({ query, filters, maxPrice, tier2Rewrite }) {
+function buildQuery({ query, filters, maxPrice, tier2Rewrite, mistralUnderstanding }) {
   const understanding = createQueryUnderstanding(query, products);
+  const mistralKeywordQuery =
+    mistralMode === "active" && mistralUnderstanding?.status === "applied"
+      ? mistralUnderstanding.compiler?.rewrites?.keyword_query
+      : "";
   const filter = [
     { term: { availability: "active" } },
     { range: { price: { lte: Number(maxPrice) || 20000 } } },
@@ -152,14 +188,15 @@ function buildQuery({ query, filters, maxPrice, tier2Rewrite }) {
     filter.push({ terms: { material: keywordValues(understanding.materials) } });
   }
   applyTier2Filters(filter, filters, tier2Rewrite);
+  applyMistralFilters(filter, filters, mistralUnderstanding);
   addPhraseIntentBoosts(should, understanding.phraseIntents);
 
-  if (understanding.tokens.length) {
+  if (mistralKeywordQuery || understanding.tokens.length) {
     must.push({
       multi_match: {
-        query: understanding.tokens.join(" "),
+        query: mistralKeywordQuery || understanding.tokens.join(" "),
         fields: ["title^4", "canonical_text^3", "description^2", "material", "color", "reasons"],
-        operator: "and",
+        operator: mistralKeywordQuery ? "or" : "and",
       },
     });
   }
@@ -179,6 +216,7 @@ function buildQuery({ query, filters, maxPrice, tier2Rewrite }) {
   }
   addTier2Boosts(should, tier2Rewrite);
   addTier2Burials(should, tier2Rewrite);
+  addMistralRewrite(should, mistralUnderstanding);
 
   return {
     bool: {
@@ -188,6 +226,32 @@ function buildQuery({ query, filters, maxPrice, tier2Rewrite }) {
       minimum_should_match: must.length || !query?.trim() ? 0 : 1,
     },
   };
+}
+
+async function fetchMistralUnderstanding(query, filters) {
+  if (mistralMode === "off") return { status: "disabled", tookMs: 0 };
+  if (!query.trim()) return { status: "skipped", tookMs: 0 };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), mistralTimeoutMs);
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(mistralEndpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query, filters }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Mistral adapter returned ${response.status}`);
+    return await response.json();
+  } catch (error) {
+    return {
+      status: error.name === "AbortError" ? "timeout" : "skipped",
+      tookMs: Date.now() - startedAt,
+      error: error.message,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function fetchTier2Rewrite(query, understanding) {
@@ -263,13 +327,16 @@ async function search(payload) {
   const sort = payload.sort || "Recommended";
   const size = Math.min(Number(payload.size) || 48, 96);
   const understanding = createQueryUnderstanding(query, products);
-  const tier2Rewrite = await fetchTier2Rewrite(query, understanding);
+  const [tier2Rewrite, mistralUnderstanding] = await Promise.all([
+    fetchTier2Rewrite(query, understanding),
+    fetchMistralUnderstanding(query, filters),
+  ]);
 
   try {
     const body = {
       size,
       track_total_hits: trackTotalHits,
-      query: buildQuery({ query, filters, maxPrice, tier2Rewrite }),
+      query: buildQuery({ query, filters, maxPrice, tier2Rewrite, mistralUnderstanding }),
       _source: [
         "item_id",
         "brand",
@@ -306,11 +373,15 @@ async function search(payload) {
       opensearchTookMs: result.took,
       total: typeof result.hits.total === "number" ? result.hits.total : result.hits.total?.value,
       totalRelation: typeof result.hits.total === "number" ? "eq" : result.hits.total?.relation,
-      queryPlan: { ...understanding, tier2: tier2Rewrite },
+      queryPlan: { ...understanding, tier2: tier2Rewrite, mistral: mistralUnderstanding },
       enhancements: {
         querqy: tier2Rewrite.status,
         rules: tier2Rewrite.rules || [],
         tookMs: tier2Rewrite.tookMs,
+        mistral: mistralUnderstanding.status,
+        mistralModel: mistralUnderstanding.model || null,
+        mistralTookMs: mistralUnderstanding.tookMs,
+        mistralMode,
       },
       products: result.hits.hits.map(toProduct),
     };
@@ -322,11 +393,15 @@ async function search(payload) {
       tookMs: Date.now() - startedAt,
       total: productsFallback.length,
       totalRelation: "eq",
-      queryPlan: { ...understanding, tier2: tier2Rewrite },
+      queryPlan: { ...understanding, tier2: tier2Rewrite, mistral: mistralUnderstanding },
       enhancements: {
         querqy: tier2Rewrite.status,
         rules: tier2Rewrite.rules || [],
         tookMs: tier2Rewrite.tookMs,
+        mistral: mistralUnderstanding.status,
+        mistralModel: mistralUnderstanding.model || null,
+        mistralTookMs: mistralUnderstanding.tookMs,
+        mistralMode,
       },
       products: productsFallback,
       warning: error.message,

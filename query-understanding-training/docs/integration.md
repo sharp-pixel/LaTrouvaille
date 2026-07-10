@@ -17,6 +17,8 @@ For that reason, this project ships two policies:
 4. Add shadow traffic and measure query-understanding p50/p95 separately from OpenSearch latency.
 5. Introduce a fail-open service boundary only after quality and latency gates pass.
 
+The prototype now includes that boundary at `retail-search-prototype/scripts/mistral-query-understanding.mjs`. It uses an OpenAI-compatible Mistral serving endpoint and accepts the served model alias through `MISTRAL_MODEL`, which makes the same adapter work for the vanilla checkpoint or a server-loaded LoRA adapter. `MISTRAL_QUERY_UNDERSTANDING_MODE=shadow` records output without changing retrieval; `active` applies only the validated rewrite and allowlisted catalog constraints. It does not execute `output.opensearch.body`: the Node API retains ownership of request compilation.
+
 An 8B local model will not fit the prototype’s current 5–15 ms Tier-1 parsing budget or the 20 ms Tier-2 rewrite timeout. Do not replace the in-process JavaScript parser with a blocking network call by default. Likely production options are asynchronous enrichment, aggressive caching, a smaller distilled model, or a separately budgeted service with a deterministic fallback.
 
 ## Safety contract

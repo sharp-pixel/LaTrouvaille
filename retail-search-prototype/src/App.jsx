@@ -721,6 +721,7 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
   const sourceLabel = searchMeta?.source === "opensearch" ? "OpenSearch" : "Local fallback";
   const tier2 = searchMeta?.enhancements?.querqy || "not_called";
   const rules = searchMeta?.enhancements?.rules || [];
+  const mistral = searchMeta?.enhancements?.mistral;
   return (
     <section className="ubi-panel" aria-label="User behavior telemetry">
       <div>
@@ -734,6 +735,7 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
           Querqy {tier2}
           {rules.length ? `: ${rules.slice(0, 2).join(", ")}` : ""}
         </small>
+        {mistral && <small>Mistral {mistral} ({searchMeta.enhancements.mistralMode})</small>}
       </div>
       <ol>
         {recent.map((event) => (

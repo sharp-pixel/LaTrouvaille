@@ -8,7 +8,7 @@ from pathlib import Path
 
 from query_understanding.schemas import AgenticPlannerInput
 
-OBJECTIVE_NAME = "opensearch_agentic_query_planner_v1"
+OBJECTIVE_NAME = "opensearch_agentic_query_planner_v3"
 
 
 def load_system_prompt(path: Path | None = None) -> str:
@@ -16,7 +16,7 @@ def load_system_prompt(path: Path | None = None) -> str:
         path.read_text(encoding="utf-8")
         if path is not None
         else files("query_understanding")
-        .joinpath("prompts/opensearch-agentic-query-planner-v1.txt")
+        .joinpath("prompts/opensearch-agentic-query-planner-v3.txt")
         .read_text(encoding="utf-8")
     ).strip()
     if not prompt:
@@ -29,7 +29,7 @@ def load_user_prompt_template(path: Path | None = None) -> str:
         path.read_text(encoding="utf-8")
         if path is not None
         else files("query_understanding")
-        .joinpath("prompts/opensearch-agentic-query-planner-user-v1.txt")
+        .joinpath("prompts/opensearch-agentic-query-planner-user-v3.txt")
         .read_text(encoding="utf-8")
     ).strip()
     if not template:

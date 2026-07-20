@@ -1,0 +1,7 @@
+Question: ${parameters.question}
+Mapping JSON string: ${parameters.index_mapping:-}
+Query Fields JSON string: ${parameters.query_fields:-}
+
+==== OUTPUT ====
+GIVE THE OUTPUT PART ONLY IN YOUR RESPONSE (a single JSON object)
+Output:

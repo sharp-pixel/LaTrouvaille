@@ -1,8 +1,20 @@
 import { Client } from "@opensearch-project/opensearch";
 import http from "node:http";
 import { products } from "../src/data/catalog.js";
-import { AGENTIC_FILTER_FIELDS, buildAgenticQuery, validateAgenticDsl } from "../src/lib/agentic-search.js";
-import { createQueryUnderstanding, localSearchProducts, normalizeText } from "../src/lib/search.js";
+import { getPersonaById, getPersonaSearchContext } from "../src/data/personas.js";
+import {
+  AGENTIC_FILTER_FIELDS,
+  buildAgenticQuery,
+  buildPersonaQueryClause,
+  buildPersonalizedRewrite,
+  buildRecommendedRankFeatureClauses,
+  buildServiceTextRecipe,
+  buildTrustedPersonaContext,
+  deriveAgenticServiceConstraints,
+  deriveEffectiveSort,
+  validateAgenticDsl,
+} from "../src/lib/agentic-search.js";
+import { createQueryUnderstanding, localSearchProducts, normalizeText, stripQueryControls } from "../src/lib/search.js";
 
 const port = Number(process.env.SEARCH_API_PORT || 8790);
 const index = process.env.OPENSEARCH_ALIAS || process.env.OPENSEARCH_INDEX || "secondhand_items_current";
@@ -11,7 +23,11 @@ const queryRewriteEndpoint = process.env.QUERY_REWRITE_ENDPOINT || "http://127.0
 const queryRewriteTimeoutMs = Number(process.env.QUERY_REWRITE_TIMEOUT_MS || 20);
 const agenticMode = process.env.OPENSEARCH_AGENTIC_SEARCH_MODE || "active";
 const agenticPipeline = process.env.OPENSEARCH_AGENTIC_SEARCH_PIPELINE || "secondhand-agentic-search";
-const agenticTimeoutMs = Number(process.env.OPENSEARCH_AGENTIC_SEARCH_TIMEOUT_MS || 3000);
+const configuredAgenticTimeoutMs = Number(process.env.OPENSEARCH_AGENTIC_SEARCH_TIMEOUT_MS);
+const agenticTimeoutMs =
+  Number.isFinite(configuredAgenticTimeoutMs) && configuredAgenticTimeoutMs > 0
+    ? Math.trunc(configuredAgenticTimeoutMs)
+    : 15000;
 
 const client = new Client({
   node: process.env.OPENSEARCH_URL || "http://127.0.0.1:9200",
@@ -23,8 +39,8 @@ const client = new Client({
 });
 
 function parseTrackTotalHits(value) {
-  if (value === "true") return true;
-  if (value === "false") return false;
+  if (value === "true") return 10000;
+  if (value === "false") return 0;
   const parsed = Number(value || 10000);
   return Number.isInteger(parsed) && parsed >= 0 ? Math.min(parsed, 10000) : 10000;
 }
@@ -133,18 +149,16 @@ function addPhraseIntentBoosts(should, phraseIntents = []) {
   });
 }
 
-function buildQuery({ query, filters, maxPrice, tier2Rewrite }) {
+function buildQuery({ query, filters, maxPrice, sort, tier2Rewrite, personaContext }) {
   const understanding = createQueryUnderstanding(query, products);
+  const relevanceQuery = stripQueryControls(query);
   const filter = [
     { term: { availability: "active" } },
     { range: { price: { lte: Number(maxPrice) || 20000 } } },
   ];
   const must = [];
-  const should = [
-    { rank_feature: { field: "quality_score", boost: 0.12 } },
-    { rank_feature: { field: "freshness_score", boost: 0.03 } },
-    { rank_feature: { field: "seller_score", boost: 0.02 } },
-  ];
+  const personaClause = buildPersonaQueryClause(personaContext);
+  const should = [...(personaClause ? [personaClause] : []), ...buildRecommendedRankFeatureClauses(sort)];
 
   Object.entries(filters || {}).forEach(([key, values]) => {
     if (values?.length) filter.push({ terms: { [key]: keywordValues(values) } });
@@ -174,13 +188,13 @@ function buildQuery({ query, filters, maxPrice, tier2Rewrite }) {
     });
   }
 
-  if (query?.trim()) {
+  if (relevanceQuery) {
     should.push(
-      { match_phrase: { brand: { query, boost: 12 } } },
-      { match_phrase: { title: { query, boost: 7 } } },
+      { match_phrase: { brand: { query: relevanceQuery, boost: 12 } } },
+      { match_phrase: { title: { query: relevanceQuery, boost: 7 } } },
       {
         multi_match: {
-          query,
+          query: relevanceQuery,
           fields: ["brand^6", "title^5", "category^3", "material^2", "color", "description", "canonical_text"],
           operator: "or",
         },
@@ -195,7 +209,7 @@ function buildQuery({ query, filters, maxPrice, tier2Rewrite }) {
       filter,
       must,
       should,
-      minimum_should_match: must.length || !query?.trim() ? 0 : 1,
+      minimum_should_match: must.length || !understanding.requiresTextMatch || !relevanceQuery ? 0 : 1,
     },
   };
 }
@@ -281,14 +295,46 @@ async function search(payload) {
     ]),
   );
   const requestedMaxPrice = Number(payload.maxPrice);
-  const maxPrice = Number.isFinite(requestedMaxPrice) ? Math.min(Math.max(requestedMaxPrice, 1), 20000) : 20000;
+  const maxPrice = Number.isFinite(requestedMaxPrice)
+    ? Math.min(Math.max(Math.trunc(requestedMaxPrice), 1), 20000)
+    : 20000;
   const requestedSort = String(payload.sort || "Recommended");
-  const sort = ["Recommended", "Lowest price", "Newest", "Price drop"].includes(requestedSort)
+  const selectedSort = ["Recommended", "Lowest price", "Newest", "Price drop"].includes(requestedSort)
     ? requestedSort
     : "Recommended";
+  const sort = deriveEffectiveSort(query, selectedSort);
   const requestedSize = Number(payload.size);
   const size = Number.isFinite(requestedSize) ? Math.min(Math.max(Math.trunc(requestedSize), 1), 96) : 48;
+  // The browser sends only an allowlisted identifier. Ignore any client-provided
+  // persona fields and resolve the authoritative profile on the server.
+  const personaId = typeof payload.personaId === "string" ? payload.personaId.slice(0, 64) : "anonymous";
+  const persona = getPersonaById(personaId);
+  const personaSearchContext = getPersonaSearchContext(persona.id);
+  const personaContext = buildTrustedPersonaContext(personaSearchContext);
   const understanding = createQueryUnderstanding(query, products);
+  const { filters: effectiveFilters, maxPrice: effectiveMaxPrice } = deriveAgenticServiceConstraints({
+    filters,
+    maxPrice,
+    understanding,
+  });
+  const serviceTextRecipe = buildServiceTextRecipe({ query, filters: effectiveFilters, sort, understanding });
+  const agenticEligible = Boolean(serviceTextRecipe.textQuery);
+  const personalization = (status) => {
+    const effectiveStatus = personaContext.mode === "unprofiled" ? "unprofiled" : status;
+    const personalizedRewrite = buildPersonalizedRewrite(
+      serviceTextRecipe.textQuery || understanding.rewritten,
+      personaSearchContext,
+    );
+    return {
+      personalizedRewrite,
+      personalization: {
+        personaId: personaContext.id,
+        personaVersion: personaContext.version,
+        status: effectiveStatus,
+        query: personalizedRewrite,
+      },
+    };
+  };
   const sourceFields = [
     "item_id",
     "brand",
@@ -314,24 +360,38 @@ async function search(payload) {
     "quality_score",
   ];
   let agenticError = null;
+  let agenticDslQuery = null;
 
-  if (agenticMode === "active" && query.trim()) {
+  if (agenticMode === "active" && query.trim() && agenticEligible) {
     try {
       const body = {
-        query: buildAgenticQuery({ query, filters, maxPrice, sort, size, trackTotalHits }),
+        query: buildAgenticQuery({
+          query,
+          filters: effectiveFilters,
+          maxPrice: effectiveMaxPrice,
+          sort,
+          size,
+          trackTotalHits,
+          understanding,
+          persona: personaSearchContext,
+        }),
         _source: sourceFields,
       };
 
       const result = unwrap(
         await client.search({ index, search_pipeline: agenticPipeline, body }, { requestTimeout: agenticTimeoutMs }),
       );
+      agenticDslQuery = result.ext?.dsl_query || null;
       validateAgenticDsl({
-        dslQuery: result.ext?.dsl_query,
-        filters,
-        maxPrice,
+        dslQuery: agenticDslQuery,
+        filters: effectiveFilters,
+        maxPrice: effectiveMaxPrice,
+        shopperQuery: query,
         sort,
         size,
         trackTotalHits,
+        understanding,
+        persona: personaSearchContext,
       });
       return {
         index,
@@ -342,17 +402,18 @@ async function search(payload) {
         totalRelation: typeof result.hits.total === "number" ? "eq" : result.hits.total?.relation,
         queryPlan: {
           ...understanding,
+          ...personalization("applied"),
           agentic: {
             status: "applied",
             pipeline: agenticPipeline,
-            dslQuery: result.ext?.dsl_query || null,
+            dslQuery: agenticDslQuery,
           },
         },
         enhancements: {
           agentic: "applied",
           agenticMode,
           agenticPipeline,
-          dslQuery: result.ext?.dsl_query || null,
+          dslQuery: agenticDslQuery,
           querqy: "not_called",
           rules: [],
         },
@@ -369,7 +430,14 @@ async function search(payload) {
     const body = {
       size,
       track_total_hits: trackTotalHits,
-      query: buildQuery({ query, filters, maxPrice, tier2Rewrite }),
+      query: buildQuery({
+        query,
+        filters,
+        maxPrice: effectiveMaxPrice,
+        sort,
+        tier2Rewrite,
+        personaContext: personaSearchContext,
+      }),
       _source: sourceFields,
     };
     const sortClause = buildSort(sort);
@@ -385,11 +453,13 @@ async function search(payload) {
       totalRelation: typeof result.hits.total === "number" ? "eq" : result.hits.total?.relation,
       queryPlan: {
         ...understanding,
+        ...personalization(agenticError ? "fallback" : "applied"),
         tier2: tier2Rewrite,
         agentic: {
           status: agenticError ? "fallback" : agenticMode === "active" ? "skipped" : "disabled",
           pipeline: agenticPipeline,
           error: agenticError?.message || null,
+          dslQuery: agenticDslQuery,
         },
       },
       enhancements: {
@@ -400,12 +470,19 @@ async function search(payload) {
         agenticMode,
         agenticPipeline,
         agenticError: agenticError?.message || null,
+        dslQuery: agenticDslQuery,
       },
       products: result.hits.hits.map(toProduct),
       warning: agenticError ? `Agentic Search failed; used lexical OpenSearch fallback: ${agenticError.message}` : undefined,
     };
   } catch (error) {
-    const productsFallback = localSearchProducts(products, { query, filters, maxPrice, sort }).slice(0, size);
+    const productsFallback = localSearchProducts(products, {
+      query,
+      filters,
+      maxPrice: effectiveMaxPrice,
+      sort,
+      persona,
+    }).slice(0, size);
     return {
       index,
       source: "local-fallback",
@@ -414,11 +491,13 @@ async function search(payload) {
       totalRelation: "eq",
       queryPlan: {
         ...understanding,
+        ...personalization("fallback"),
         tier2: tier2Rewrite,
         agentic: {
           status: agenticError ? "failed" : agenticMode === "active" ? "skipped" : "disabled",
           pipeline: agenticPipeline,
           error: agenticError?.message || null,
+          dslQuery: agenticDslQuery,
         },
       },
       enhancements: {
@@ -429,6 +508,7 @@ async function search(payload) {
         agenticMode,
         agenticPipeline,
         agenticError: agenticError?.message || null,
+        dslQuery: agenticDslQuery,
       },
       products: productsFallback,
       warning: [agenticError?.message, error.message].filter(Boolean).join("; "),

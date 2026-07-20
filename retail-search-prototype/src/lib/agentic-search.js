@@ -1,3 +1,7 @@
+import { deriveEffectiveSort, stripQueryControls } from "./search.js";
+
+export { deriveEffectiveSort } from "./search.js";
+
 export const AGENTIC_QUERY_FIELDS = [
   "brand",
   "title",
@@ -52,6 +56,19 @@ const AGENTIC_RANGE_FIELDS = new Set([...AGENTIC_NUMERIC_FIELDS, ...AGENTIC_DATE
 const OPENSEARCH_INTEGER_MIN = -2_147_483_648;
 const OPENSEARCH_INTEGER_MAX = 2_147_483_647;
 const AGENTIC_RANK_FEATURE_FIELDS = new Set(["freshness_score", "quality_score", "seller_score"]);
+const CANONICAL_MULTI_MATCH_FIELDS = ["title^5", "brand^3", "canonical_text^3", "description"];
+const RECOMMENDED_RANK_FEATURES = new Map([
+  ["quality_score", 0.2],
+  ["freshness_score", 0.05],
+  ["seller_score", 0.02],
+]);
+export const PERSONA_EXPANSION_BOOST = 0.35;
+export const MAX_PERSONA_CONTEXT_LENGTH = 512;
+const MAX_PERSONA_ID_LENGTH = 64;
+const MAX_PERSONA_ARCHETYPE_LENGTH = 64;
+const MAX_PERSONA_BACKGROUND_LENGTH = 160;
+const MAX_PERSONA_MENTAL_MODEL_LENGTH = 160;
+const MAX_PERSONA_QUERY_EXPANSION_LENGTH = 120;
 const AGENTIC_PREFIX_FIELDS = new Set([
   "availability",
   "category",
@@ -82,6 +99,8 @@ const AGENTIC_QUERY_TYPES = new Set([
   "terms",
 ]);
 const AGENTIC_TOP_LEVEL_KEYS = new Set(["query", "size", "sort", "track_total_hits"]);
+const MAX_AGENTIC_QUERY_TEXT_LENGTH = 1000;
+const MAX_SERVICE_TEXT_QUERY_LENGTH = 300;
 const MAX_AGENTIC_QUERY_CLAUSES = 100;
 const FORBIDDEN_DSL_KEYS = new Set([
   "agentic",
@@ -92,12 +111,11 @@ const FORBIDDEN_DSL_KEYS = new Set([
   "script_score",
   "wildcard",
 ]);
-
 const SORT_INSTRUCTIONS = {
-  Recommended: "Rank by textual relevance, then favor quality_score, freshness_score, and seller_score.",
-  "Lowest price": "Sort by price ascending, then by relevance descending.",
-  Newest: "Sort by listed_at descending, then by relevance descending.",
-  "Price drop": "Sort by old_price descending with missing values last, then by relevance descending.",
+  Recommended: "recommended",
+  "Lowest price": "price_asc",
+  Newest: "listed_at_desc",
+  "Price drop": "old_price_desc",
 };
 
 export function buildAgenticQueryText({
@@ -107,27 +125,250 @@ export function buildAgenticQueryText({
   sort = "Recommended",
   size = 48,
   trackTotalHits = 10000,
+  understanding = {},
+  persona,
 }) {
-  const constraints = ["availability must equal active", `price must be at most ${Number(maxPrice) || 20000} EUR`];
-
-  for (const field of AGENTIC_FILTER_FIELDS) {
-    const values = sanitizeFilterValues(filters[field]);
-    if (values.length === 0) continue;
-    constraints.push(`${field} must be one of the exact values ${JSON.stringify(values)}`);
+  const priceCeiling = Number(maxPrice) || 20000;
+  const resultSize = Math.min(Math.max(Math.trunc(Number(size) || 48), 1), 96);
+  const totalHits =
+    trackTotalHits === true
+      ? 10000
+      : trackTotalHits === false
+        ? 0
+        : Math.max(0, Math.trunc(Number(trackTotalHits) || 0));
+  const mandatoryFilters = buildMandatoryFilters(filters, priceCeiling);
+  const { textQuery, textOperator } = buildServiceTextRecipe({ query, filters, sort, understanding });
+  if (!textQuery) {
+    throw new Error("Agentic query requires descriptive text; use the deterministic browse path");
   }
 
-  return [
-    `Shopper request: ${String(query || "Show all available items").trim().slice(0, 1000)}.`,
-    `Required filters: ${constraints.join("; ")}.`,
-    trackTotalHits === true
-      ? "Track exact total hits."
-      : trackTotalHits === false
-        ? "Do not track total hits."
-        : `Track total hits up to ${Math.max(0, Number(trackTotalHits) || 0)}.`,
-    `Return exactly ${Math.min(Math.max(Number(size) || 48, 1), 96)} product hits.`,
-    SORT_INSTRUCTIONS[sort] || SORT_INSTRUCTIONS.Recommended,
-    "Use full-text queries for relevance and exact/range clauses in bool.filter. Use only mapped fields.",
+  const contract = JSON.stringify({
+    filter: mandatoryFilters,
+    size: resultSize,
+    track_total_hits: totalHits,
+    sort_mode: SORT_INSTRUCTIONS[sort] || SORT_INSTRUCTIONS.Recommended,
+    ...(sort === "Recommended" ? {} : { rank_features: false }),
+    text_operator: textOperator,
+    base_text_query: textQuery,
+    persona: buildTrustedPersonaContext(persona),
+  });
+  const prefix = "Normalized shopper request: ";
+  const suffix = [
+    `Immutable service contract: ${contract}`,
+    "Copy the core contract exactly. Apply persona only through the system persona-should recipe. Follow sort_mode.",
   ].join("\n");
+  const shopperBudget = MAX_AGENTIC_QUERY_TEXT_LENGTH - prefix.length - suffix.length - 1;
+  if (shopperBudget < 1) {
+    throw new Error("Agentic service contract exceeds the native 1000-character query_text limit");
+  }
+  const shopperRequest = buildNormalizedShopperRequest(textQuery, sort, priceCeiling);
+  if (shopperRequest.length > shopperBudget) {
+    throw new Error(
+      "Agentic normalized shopper request and service contract exceed the native 1000-character query_text limit",
+    );
+  }
+  return `${prefix}${shopperRequest}\n${suffix}`;
+}
+
+function buildNormalizedShopperRequest(textQuery, sort, priceCeiling) {
+  const base = String(textQuery).replace(/\s+/g, " ").trim();
+  const boundedPrice = Math.max(1, Math.trunc(Number(priceCeiling) || 20000));
+  if (sort === "Lowest price") return `cheapest ${base} under ${boundedPrice}`;
+  if (sort === "Newest") return `newest ${base} under ${boundedPrice}`;
+  if (sort === "Price drop") return `${base} with biggest price drops under ${boundedPrice}`;
+  return `${base} under ${boundedPrice}`;
+}
+
+function boundedPersonaText(value, field, maxLength) {
+  if (typeof value !== "string") throw new Error(`Trusted persona ${field} must be a string`);
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length > maxLength || /[\r\n]/.test(value)) {
+    throw new Error(`Trusted persona ${field} must contain 1-${maxLength} single-line characters`);
+  }
+  return normalized;
+}
+
+export function buildTrustedPersonaContext(persona = {}) {
+  const rawId = persona?.id ?? persona?.personaId ?? "anonymous";
+  const id = boundedPersonaText(rawId, "id", MAX_PERSONA_ID_LENGTH);
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+    throw new Error("Trusted persona id must be a lowercase kebab-case identifier");
+  }
+  const rawVersion = persona?.version ?? persona?.personaVersion ?? 1;
+  const version = rawVersion;
+  if (!Number.isInteger(version) || version < 1 || version > 1000) {
+    throw new Error("Trusted persona version must be an integer between 1 and 1000");
+  }
+  const rawExpansion = persona?.searchProfile?.queryExpansion ?? persona?.queryExpansion ?? persona?.query_expansion ?? "";
+  if (id === "anonymous" || rawExpansion === "") {
+    return Object.freeze({ id: "anonymous", version: 1, mode: "unprofiled" });
+  }
+
+  const context = {
+    id,
+    version,
+    archetype: boundedPersonaText(persona?.archetype, "archetype", MAX_PERSONA_ARCHETYPE_LENGTH),
+    background: boundedPersonaText(persona?.background, "background", MAX_PERSONA_BACKGROUND_LENGTH),
+    mental_model: boundedPersonaText(
+      persona?.mentalModel ?? persona?.mental_model,
+      "mental_model",
+      MAX_PERSONA_MENTAL_MODEL_LENGTH,
+    ),
+    query_expansion: boundedPersonaText(
+      rawExpansion,
+      "query_expansion",
+      MAX_PERSONA_QUERY_EXPANSION_LENGTH,
+    ),
+  };
+  if (JSON.stringify(context).length > MAX_PERSONA_CONTEXT_LENGTH) {
+    throw new Error(`Trusted persona context exceeds ${MAX_PERSONA_CONTEXT_LENGTH} characters`);
+  }
+  return Object.freeze(context);
+}
+
+export function buildPersonaQueryClause(persona) {
+  const context = buildTrustedPersonaContext(persona);
+  if (context.mode === "unprofiled") return null;
+  return {
+    multi_match: {
+      query: context.query_expansion,
+      fields: [...CANONICAL_MULTI_MATCH_FIELDS],
+      operator: "or",
+      boost: PERSONA_EXPANSION_BOOST,
+    },
+  };
+}
+
+export function buildPersonalizedRewrite(baseTextQuery, persona) {
+  const base = String(baseTextQuery || "").replace(/\s+/g, " ").trim();
+  const context = buildTrustedPersonaContext(persona);
+  return context.mode === "unprofiled" ? base : `${base} ${context.query_expansion}`.trim();
+}
+
+export function buildLocalPersonalizationPlan(queryPlan = {}, persona) {
+  const basePlan = queryPlan && typeof queryPlan === "object" && !Array.isArray(queryPlan) ? queryPlan : {};
+  const context = buildTrustedPersonaContext(persona);
+  const baseRewrite = String(basePlan.rewritten || "").replace(/\s+/g, " ").trim();
+  const personalizedRewrite =
+    context.mode === "unprofiled" ? baseRewrite : `${baseRewrite} ${context.query_expansion}`.trim();
+  return {
+    ...basePlan,
+    ...(personalizedRewrite !== baseRewrite ? { baseRewrite } : {}),
+    rewritten: personalizedRewrite,
+    personalizedRewrite,
+    personalization: {
+      personaId: context.id,
+      personaVersion: context.version,
+      status: context.mode === "unprofiled" ? "unprofiled" : "fallback",
+      query: personalizedRewrite,
+    },
+  };
+}
+
+function cleanServiceTextQuery(query) {
+  return stripQueryControls(query || "Show all available items").slice(0, MAX_SERVICE_TEXT_QUERY_LENGTH).trim();
+}
+
+export function buildServiceTextRecipe({ query, filters = {}, understanding = {} }) {
+  const cleaned = cleanServiceTextQuery(query);
+  const phraseIntents = Array.isArray(understanding.phraseIntents) ? understanding.phraseIntents : [];
+  const phraseLabels = phraseIntents
+    .map((intent) => (typeof intent?.label === "string" ? intent.label.trim() : ""))
+    .filter(Boolean);
+
+  const facetValues = AGENTIC_FILTER_FIELDS.flatMap((field) => normalizedFilterValues(filters[field]));
+  const facetTokenKeys = new Set(
+    facetValues.flatMap((value) => intentTokens(value).map(({ key }) => key)),
+  );
+  const phraseTokenKeys = new Set(
+    phraseIntents.flatMap((intent) =>
+      [intent?.label, intent?.matchedPhrase, ...(Array.isArray(intent?.phrases) ? intent.phrases : [])].flatMap(
+        (value) => intentTokens(value).map(({ key }) => key),
+      ),
+    ),
+  );
+  const connectorKeys = new Set([
+    "a",
+    "an",
+    "and",
+    "condition",
+    "conditions",
+    "for",
+    "from",
+    "in",
+    "made",
+    "of",
+    "or",
+    "the",
+    "with",
+  ]);
+  const residual = intentTokens(cleaned).filter(
+    ({ key }) => !facetTokenKeys.has(key) && !phraseTokenKeys.has(key) && !connectorKeys.has(key),
+  );
+  if (phraseLabels.length) {
+    const descriptorValues = [...new Map(residual.map(({ key, value }) => [key, value])).values()];
+    return {
+      textQuery: (descriptorValues.length ? descriptorValues : [...new Set(phraseLabels)])
+        .join(" ")
+        .slice(0, MAX_SERVICE_TEXT_QUERY_LENGTH),
+      textOperator: descriptorValues.length ? "and" : "or",
+    };
+  }
+  if (facetTokenKeys.size && residual.length) {
+    return {
+      textQuery: residual
+        .map(({ value }) => value)
+        .join(" ")
+        .slice(0, MAX_SERVICE_TEXT_QUERY_LENGTH),
+      textOperator: "and",
+    };
+  }
+  if (facetValues.length) {
+    return {
+      textQuery: [...new Set(facetValues)].join(" ").slice(0, MAX_SERVICE_TEXT_QUERY_LENGTH),
+      textOperator: defaultServiceTextOperator(filters),
+    };
+  }
+  return {
+    textQuery: residual.length ? cleaned : "",
+    textOperator: understanding.brand ? "and" : defaultServiceTextOperator(filters),
+  };
+}
+
+export function buildServiceTextQuery(query, sort = "Recommended", filters = {}, understanding = {}) {
+  return buildServiceTextRecipe({ query, filters, sort, understanding }).textQuery;
+}
+
+export function buildServiceTextOperator(filters = {}, query, sort = "Recommended", understanding = {}) {
+  if (typeof query === "string" && query.trim()) {
+    return buildServiceTextRecipe({ query, filters, sort, understanding }).textOperator;
+  }
+  return defaultServiceTextOperator(filters);
+}
+
+export function buildRecommendedRankFeatureClauses(sort = "Recommended") {
+  if (sort !== "Recommended") return [];
+  return [...RECOMMENDED_RANK_FEATURES].map(([field, boost]) => ({ rank_feature: { field, boost } }));
+}
+
+function defaultServiceTextOperator(filters) {
+  const facetValueCounts = AGENTIC_FILTER_FIELDS.map((field) => normalizedFilterValues(filters[field]).length);
+  return facetValueCounts.every((count) => count === 0) || facetValueCounts.some((count) => count > 1) ? "or" : "and";
+}
+
+function intentTokens(value) {
+  const matches = String(value).match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu) || [];
+  return matches.map((token) => ({ value: token, key: intentTokenKey(token) }));
+}
+
+function intentTokenKey(value) {
+  const normalized = normalizeFilterValue(value);
+  if (normalized.length > 4 && normalized.endsWith("ies")) return `${normalized.slice(0, -3)}y`;
+  if (normalized.length > 4 && /(ches|shes|sses|xes|zes)$/.test(normalized)) return normalized.slice(0, -2);
+  if (normalized.length > 3 && normalized.endsWith("s") && !normalized.endsWith("ss")) {
+    return normalized.slice(0, -1);
+  }
+  return normalized;
 }
 
 export function buildAgenticQuery(options) {
@@ -152,7 +393,47 @@ export function selectAvailableModel({ availableModelIds, fineTunedModel, baseMo
   throw new Error(`The model server exposes neither ${expected || "a configured model"}`);
 }
 
-export function validateAgenticDsl({ dslQuery, filters = {}, maxPrice, sort, size, trackTotalHits }) {
+export function deriveAgenticServiceConstraints({ filters = {}, maxPrice = 20000, understanding = {} }) {
+  const sanitizedFilters = Object.fromEntries(
+    AGENTIC_FILTER_FIELDS.map((field) => [field, sanitizeFilterValues(filters[field])]),
+  );
+  const effectiveFilters = {
+    ...sanitizedFilters,
+    category: sanitizedFilters.category.length
+      ? sanitizedFilters.category
+      : sanitizeFilterValues(understanding.categories),
+    material: sanitizedFilters.material.length
+      ? sanitizedFilters.material
+      : sanitizeFilterValues(understanding.materials),
+  };
+  const requestedPrice = Number(maxPrice);
+  const boundedPrice = Number.isFinite(requestedPrice)
+    ? Math.min(Math.max(Math.trunc(requestedPrice), 1), 20000)
+    : 20000;
+  const rawUnderstoodPrice = understanding.priceMax;
+  const hasUnderstoodPrice =
+    (typeof rawUnderstoodPrice === "number" ||
+      (typeof rawUnderstoodPrice === "string" && rawUnderstoodPrice.trim() !== "")) &&
+    Number.isFinite(Number(rawUnderstoodPrice));
+  const understoodPrice = hasUnderstoodPrice ? Number(rawUnderstoodPrice) : null;
+  const effectiveMaxPrice =
+    understoodPrice !== null
+      ? Math.min(boundedPrice, Math.min(Math.max(Math.trunc(understoodPrice), 1), 20000))
+      : boundedPrice;
+  return { filters: effectiveFilters, maxPrice: effectiveMaxPrice };
+}
+
+export function validateAgenticDsl({
+  dslQuery,
+  filters = {},
+  maxPrice,
+  shopperQuery,
+  sort,
+  size,
+  trackTotalHits,
+  understanding = {},
+  persona,
+}) {
   const body = decodeDsl(dslQuery);
   if (JSON.stringify(body).includes(AGENTIC_FALLBACK_MARKER)) {
     throw new Error("QueryPlanningTool used its internal fallback query");
@@ -174,9 +455,13 @@ export function validateAgenticDsl({ dslQuery, filters = {}, maxPrice, sort, siz
 
   const filterClauses = body.query.bool?.filter;
   const positiveFilters = Array.isArray(filterClauses) ? filterClauses : filterClauses ? [filterClauses] : [];
+  const expectedFilters = buildMandatoryFilters(filters, maxPrice);
+  if (!structuralJsonEqual(positiveFilters, expectedFilters)) {
+    throw new Error("Agentic query must copy the immutable service-contract filters exactly");
+  }
   const requiredConstraintFields = new Set(["availability", "price"]);
   for (const field of AGENTIC_FILTER_FIELDS) {
-    if (sanitizeFilterValues(filters[field]).length) requiredConstraintFields.add(field);
+    if (normalizedFilterValues(filters[field]).length) requiredConstraintFields.add(field);
   }
   if (!containsExactFilter(positiveFilters, "availability", "active", { normalize: false })) {
     throw new Error("Agentic query omitted the availability filter");
@@ -185,17 +470,33 @@ export function validateAgenticDsl({ dslQuery, filters = {}, maxPrice, sort, siz
     throw new Error("Agentic query omitted the price ceiling");
   }
   for (const field of AGENTIC_FILTER_FIELDS) {
-    const values = sanitizeFilterValues(filters[field]);
+    const values = normalizedFilterValues(filters[field]);
     if (values.length && !containsTermsFilter(positiveFilters, field, values)) {
       throw new Error(`Agentic query omitted the ${field} facet filter`);
     }
   }
   validateConstraintPlacement(body.query, requiredConstraintFields);
-  if (!containsMandatoryTextQuery(body.query)) {
-    throw new Error("Agentic query omitted the mandatory shopper-intent text query");
-  }
+  const personaClause = buildPersonaQueryClause(persona);
+  const multiMatch = validateCanonicalTextRecipe(body.query, sort, Boolean(personaClause));
+  validateServiceTextRecipe(multiMatch, shopperQuery, filters, sort, understanding);
   validateSort(body.sort, sort);
+  validateRankingClauses(body.query, sort, personaClause);
   return body;
+}
+
+function buildMandatoryFilters(filters = {}, maxPrice = 20000) {
+  const mandatoryFilters = [
+    { term: { availability: "active" } },
+    { range: { price: { lte: Number(maxPrice) || 20000 } } },
+  ];
+  for (const field of AGENTIC_FILTER_FIELDS) {
+    const values = normalizedFilterValues(filters?.[field]);
+    if (values.length === 0) continue;
+    mandatoryFilters.push(
+      values.length === 1 ? { term: { [field]: values[0] } } : { terms: { [field]: values } },
+    );
+  }
+  return mandatoryFilters;
 }
 
 function decodeDsl(value) {
@@ -211,6 +512,42 @@ function decodeDsl(value) {
     throw new Error("Agentic context did not contain an OpenSearch request body");
   }
   return decoded;
+}
+
+function structuralJsonEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((item, index) => structuralJsonEqual(item, right[index]))
+    );
+  }
+  if (
+    left === null ||
+    right === null ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) {
+    return false;
+  }
+  const leftPrototype = Object.getPrototypeOf(left);
+  const rightPrototype = Object.getPrototypeOf(right);
+  if (
+    (leftPrototype !== Object.prototype && leftPrototype !== null) ||
+    (rightPrototype !== Object.prototype && rightPrototype !== null)
+  ) {
+    return false;
+  }
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) => Object.hasOwn(right, key) && structuralJsonEqual(left[key], right[key]),
+    )
+  );
 }
 
 function validateQueryNode(node, path) {
@@ -316,6 +653,9 @@ function validateQueryFields(queryType, payload) {
     assertAllowedField(payload.field);
     if (!AGENTIC_RANK_FEATURE_FIELDS.has(payload.field)) {
       throw new Error(`Agentic rank_feature requires a mapped rank_feature field: ${String(payload.field)}`);
+    }
+    if (payload.boost !== undefined && (typeof payload.boost !== "number" || !Number.isFinite(payload.boost))) {
+      throw new Error("Agentic rank_feature.boost must be a finite number");
     }
   } else if (queryType === "match_all") {
     for (const key of Object.keys(payload)) {
@@ -641,18 +981,46 @@ function normalizedValueSet(values) {
   return new Set(values.map((value) => normalizeFilterValue(value)));
 }
 
-function containsMandatoryTextQuery(query) {
-  const must = query?.bool?.must;
-  const clauses = Array.isArray(must) ? must : must ? [must] : [];
-  return clauses.some((clause) => {
-    if (!clause || typeof clause !== "object" || Array.isArray(clause)) return false;
-    const [queryType, payload] = Object.entries(clause)[0] || [];
-    if (["match", "match_phrase"].includes(queryType)) {
-      return payload && typeof payload === "object" && Object.keys(payload).every((field) => AGENTIC_TEXT_FIELDS.has(field));
+function validateCanonicalTextRecipe(query, mode, hasPersonaClause) {
+  const bool = query?.bool;
+  if (!bool || typeof bool !== "object" || Array.isArray(bool)) {
+    throw new Error("Agentic query must use the canonical root bool recipe");
+  }
+  const expectedBoolKeys = mode === "Recommended" || hasPersonaClause ? ["filter", "must", "should"] : ["filter", "must"];
+  const actualBoolKeys = Object.keys(bool).sort();
+  if (!structuralJsonEqual(actualBoolKeys, [...expectedBoolKeys].sort())) {
+    throw new Error(`Agentic root bool keys must be exactly ${expectedBoolKeys.join(", ")}`);
+  }
+  if (!Array.isArray(bool.must) || bool.must.length !== 1 || !bool.must[0]?.multi_match) {
+    throw new Error("Agentic query must contain exactly one direct multi_match in bool.must");
+  }
+  const multiMatch = bool.must[0].multi_match;
+  const expectedKeys = ["fields", "operator", "query"];
+  if (
+    !multiMatch ||
+    typeof multiMatch !== "object" ||
+    Array.isArray(multiMatch) ||
+    !structuralJsonEqual(Object.keys(multiMatch).sort(), expectedKeys) ||
+    !structuralJsonEqual(multiMatch.fields, CANONICAL_MULTI_MATCH_FIELDS) ||
+    typeof multiMatch.query !== "string" ||
+    !multiMatch.query.trim() ||
+    !["and", "or"].includes(multiMatch.operator)
+  ) {
+    throw new Error("Agentic multi_match must use the canonical nonempty field and option recipe");
+  }
+  return multiMatch;
+}
+
+function validateServiceTextRecipe(multiMatch, shopperQuery, filters, mode, understanding) {
+  const expected = buildServiceTextRecipe({ query: shopperQuery, filters, sort: mode, understanding });
+  if (typeof shopperQuery === "string" && shopperQuery.trim()) {
+    if (multiMatch.query !== expected.textQuery) {
+      throw new Error("Agentic multi_match must copy the immutable service-contract base_text_query exactly");
     }
-    if (queryType !== "multi_match" || !payload || typeof payload !== "object") return false;
-    return payload.fields.every((field) => AGENTIC_TEXT_FIELDS.has(field.split("^", 1)[0]));
-  });
+  }
+  if (multiMatch.operator !== expected.textOperator) {
+    throw new Error("Agentic multi_match must copy the immutable service-contract text_operator exactly");
+  }
 }
 
 function sanitizeFilterValues(value) {
@@ -662,6 +1030,10 @@ function sanitizeFilterValues(value) {
         .slice(0, 20)
         .map((item) => item.trim().slice(0, 100))
     : [];
+}
+
+function normalizedFilterValues(value) {
+  return [...new Set(sanitizeFilterValues(value).map(normalizeFilterValue))];
 }
 
 function filterValuesEqual(left, right, { normalize = true } = {}) {
@@ -678,9 +1050,7 @@ function normalizeFilterValue(value) {
 function validateSort(value, mode) {
   if (mode === "Recommended") {
     if (value === undefined) return;
-    const only = sortClause(value, 0);
-    if (Array.isArray(value) && value.length === 1 && only?.field === "_score" && only?.order === "desc") return;
-    throw new Error("Recommended agentic ranking must not use a business-field sort");
+    throw new Error("Recommended agentic ranking must omit sort");
   }
   const expected = {
     "Lowest price": { field: "price", order: "asc" },
@@ -700,6 +1070,47 @@ function validateSort(value, mode) {
     secondary?.order !== "desc"
   ) {
     throw new Error(`Agentic sort does not match ${mode}`);
+  }
+}
+
+function validateRankingClauses(query, mode, personaClause) {
+  const clauses = [];
+  collectRankFeatureClauses(query, "query", clauses);
+  const expectedShould = [
+    ...(personaClause ? [personaClause] : []),
+    ...buildRecommendedRankFeatureClauses(mode),
+  ];
+  if (expectedShould.length === 0) {
+    if (query.bool.should !== undefined || clauses.length) {
+      throw new Error(`${mode} agentic ranking must omit bool.should and rank_feature clauses`);
+    }
+    return;
+  }
+  if (!Array.isArray(query.bool.should) || !structuralJsonEqual(query.bool.should, expectedShould)) {
+    if (personaClause) {
+      throw new Error("Agentic personalization and ranking must use the exact canonical bool.should recipe");
+    }
+    throw new Error("Recommended agentic ranking requires the exact three rank_feature clauses");
+  }
+  const expectedRankCount = mode === "Recommended" ? RECOMMENDED_RANK_FEATURES.size : 0;
+  if (clauses.length !== expectedRankCount) {
+    throw new Error(`${mode} agentic ranking contains an unexpected rank_feature clause`);
+  }
+}
+
+function collectRankFeatureClauses(node, path, clauses) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return;
+  const [queryType, payload] = Object.entries(node)[0] || [];
+  if (queryType === "rank_feature") {
+    clauses.push({ field: payload?.field, boost: payload?.boost, path });
+    return;
+  }
+  if (queryType !== "bool" || !payload || typeof payload !== "object" || Array.isArray(payload)) return;
+  for (const clauseName of ["filter", "must", "should"]) {
+    const rawClauses = payload[clauseName];
+    if (rawClauses === undefined) continue;
+    const children = Array.isArray(rawClauses) ? rawClauses : [rawClauses];
+    children.forEach((child, index) => collectRankFeatureClauses(child, `${path}.bool.${clauseName}[${index}]`, clauses));
   }
 }
 

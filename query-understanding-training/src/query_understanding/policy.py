@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -51,6 +53,24 @@ INTEGER_FIELD_LIMITS: dict[str, tuple[int, int]] = {
 }
 FLOAT_FIELD_TYPES = frozenset({"double", "float", "half_float", "scaled_float"})
 NUMERIC_FIELD_TYPES = frozenset(INTEGER_FIELD_LIMITS) | FLOAT_FIELD_TYPES
+AGENTIC_SERVICE_FILTER_FIELDS = ("category", "condition", "material", "country")
+AGENTIC_SERVICE_MAX_PRICE = 20_000
+AGENTIC_SERVICE_MAX_VALUES_PER_FIELD = 20
+AGENTIC_SERVICE_MAX_VALUE_LENGTH = 100
+AGENTIC_SERVICE_MAX_TEXT_QUERY_LENGTH = 300
+AGENTIC_PERSONA_MAX_CONTEXT_LENGTH = 512
+AGENTIC_PERSONA_MAX_ID_LENGTH = 64
+AGENTIC_PERSONA_MAX_ARCHETYPE_LENGTH = 64
+AGENTIC_PERSONA_MAX_BACKGROUND_LENGTH = 160
+AGENTIC_PERSONA_MAX_MENTAL_MODEL_LENGTH = 160
+AGENTIC_PERSONA_MAX_QUERY_EXPANSION_LENGTH = 120
+AGENTIC_PERSONA_EXPANSION_BOOST = 0.35
+AGENTIC_CANONICAL_MULTI_MATCH_FIELDS = ["title^5", "brand^3", "canonical_text^3", "description"]
+AGENTIC_RECOMMENDED_RANK_FEATURES = (
+    ("quality_score", 0.2),
+    ("freshness_score", 0.05),
+    ("seller_score", 0.02),
+)
 
 
 class CompilerPolicy(BaseModel):
@@ -169,20 +189,27 @@ def _validate_agentic_request_body(
         ):
             issues.append("body.query must include a required positive text relevance clause")
     track_total_hits = body.get("track_total_hits")
-    if not isinstance(track_total_hits, (bool, int)) or (
-        isinstance(track_total_hits, int)
-        and not isinstance(track_total_hits, bool)
-        and not 0 <= track_total_hits <= policy.max_track_total_hits
+    if (
+        not isinstance(track_total_hits, int)
+        or isinstance(track_total_hits, bool)
+        or not 0 <= track_total_hits <= policy.max_track_total_hits
     ):
-        issues.append(
-            f"body.track_total_hits must be a boolean or an integer between 0 and {policy.max_track_total_hits}"
-        )
+        issues.append(f"body.track_total_hits must be an integer between 0 and {policy.max_track_total_hits}")
 
     allowed_fields = _request_fields(request, policy)
     clause_count = _inspect_dsl(body, "$", policy, allowed_fields, issues)
     if clause_count > policy.max_query_clauses:
         issues.append(f"DSL has {clause_count} query clauses; limit is {policy.max_query_clauses}")
-    _inspect_sort(body.get("sort"), allowed_fields, issues)
+    sort_field_types: Mapping[str, object] | None = None
+    if isinstance(request, AgenticPlannerInput):
+        sort_field_types = {
+            field: definition.get("type") for field, definition in _request_field_definitions(request).items()
+        }
+    _inspect_sort(body.get("sort"), allowed_fields, issues, sort_field_types)
+
+    persona_expansion: str | None = None
+    if isinstance(request, AgenticPlannerInput):
+        persona_expansion = _validate_agentic_service_contract(request, body, policy, expectations, issues)
 
     if expectations:
         if size != expectations.result_size:
@@ -198,7 +225,329 @@ def _validate_agentic_request_body(
                 {constraint.field for constraint in expectations.required_filters},
                 issues,
             )
-        _validate_expected_sort(body.get("sort"), expectations.sort_mode, issues)
+        _validate_expected_sort(body, expectations.sort_mode, issues)
+        if isinstance(query, Mapping):
+            _validate_expected_text_recipe(query, expectations.sort_mode, persona_expansion is not None, issues)
+            _validate_expected_ranking(query, expectations.sort_mode, persona_expansion, issues)
+
+
+def _validate_agentic_service_contract(
+    request: AgenticPlannerInput,
+    body: Mapping[str, object],
+    policy: CompilerPolicy,
+    expectations: AgenticExpectations | None,
+    issues: list[str],
+) -> str | None:
+    lines = request.query_text.splitlines()
+    prefix = "Immutable service contract: "
+    instruction = (
+        "Copy the core contract exactly. Apply persona only through the system persona-should recipe. Follow sort_mode."
+    )
+    if len(lines) != 3 or not lines[1].startswith(prefix) or lines[2] != instruction:
+        issues.append("input.query_text must use the exact three-line native service-contract template")
+        return None
+    try:
+        contract = json.loads(lines[1][len(prefix) :])
+    except json.JSONDecodeError:
+        issues.append("input.query_text immutable service contract must be valid JSON")
+        return None
+    required_contract_keys = {
+        "base_text_query",
+        "filter",
+        "persona",
+        "size",
+        "sort_mode",
+        "text_operator",
+        "track_total_hits",
+    }
+    if (
+        not isinstance(contract, dict)
+        or not required_contract_keys <= set(contract)
+        or set(contract) - required_contract_keys != ({"rank_features"} if "rank_features" in contract else set())
+    ):
+        issues.append("input.query_text immutable service contract has invalid keys")
+        return None
+    contract_track_total_hits = contract.get("track_total_hits")
+    if (
+        not isinstance(contract_track_total_hits, int)
+        or isinstance(contract_track_total_hits, bool)
+        or not 0 <= contract_track_total_hits <= policy.max_track_total_hits
+    ):
+        issues.append(
+            "immutable service contract track_total_hits must be an integer between "
+            f"0 and {policy.max_track_total_hits}"
+        )
+    expected_summary = _normalized_shopper_summary(contract)
+    if expected_summary is None or lines[0] != f"Normalized shopper request: {expected_summary}":
+        issues.append("input.query_text normalized shopper request does not match the immutable service contract")
+    _validate_agentic_service_filters(contract.get("filter"), issues)
+    persona_expansion = _validate_agentic_persona(contract.get("persona"), issues)
+
+    query = body.get("query")
+    actual_filters: object = None
+    if isinstance(query, Mapping):
+        bool_query = query.get("bool")
+        if isinstance(bool_query, Mapping):
+            actual_filters = bool_query.get("filter")
+    if contract.get("filter") != actual_filters:
+        issues.append("target body must copy the immutable service contract filters exactly")
+    if expectations and contract.get("filter") != [
+        _constraint_filter_clause(constraint) for constraint in expectations.required_filters
+    ]:
+        issues.append("immutable service contract filters must match expectations.required_filters exactly")
+    if not _strict_scalar_equal(contract.get("size"), body.get("size")):
+        issues.append("target body must copy the immutable service contract size exactly")
+    if not _strict_scalar_equal(contract.get("track_total_hits"), body.get("track_total_hits")):
+        issues.append("target body must copy the immutable service contract track_total_hits exactly")
+    actual_text_query: object = None
+    actual_text_operator: object = None
+    if isinstance(query, Mapping):
+        bool_query = query.get("bool")
+        if isinstance(bool_query, Mapping):
+            must = bool_query.get("must")
+            if isinstance(must, list) and len(must) == 1 and isinstance(must[0], Mapping):
+                multi_match = must[0].get("multi_match")
+                if isinstance(multi_match, Mapping):
+                    actual_text_query = multi_match.get("query")
+                    actual_text_operator = multi_match.get("operator")
+    contract_text_query = contract.get("base_text_query")
+    if not isinstance(contract_text_query, str) or not contract_text_query.strip():
+        issues.append("immutable service contract base_text_query must be nonblank text")
+    else:
+        if len(contract_text_query) > AGENTIC_SERVICE_MAX_TEXT_QUERY_LENGTH:
+            issues.append("immutable service contract base_text_query must be at most 300 characters")
+        if not _is_canonical_persona_text(contract_text_query, AGENTIC_SERVICE_MAX_TEXT_QUERY_LENGTH):
+            issues.append("immutable service contract base_text_query must be canonical single-line text")
+        if contract_text_query != actual_text_query:
+            issues.append("target body must copy the immutable service contract base_text_query exactly")
+    if contract.get("text_operator") not in {"and", "or"}:
+        issues.append("immutable service contract text_operator must be and or or")
+    elif contract.get("text_operator") != actual_text_operator:
+        issues.append("target body must copy the immutable service contract text_operator exactly")
+    sort_mode = contract.get("sort_mode")
+    rank_features_enabled: bool | None = None
+    if sort_mode not in {"listed_at_desc", "old_price_desc", "price_asc", "recommended"}:
+        issues.append("immutable service contract sort_mode is unsupported")
+    elif sort_mode == "recommended":
+        rank_features_enabled = True
+        if "rank_features" in contract:
+            issues.append("recommended service contract must omit rank_features")
+    else:
+        rank_features_enabled = False
+        if contract.get("rank_features") is not False:
+            issues.append("explicit-sort service contract requires rank_features=false")
+    if expectations:
+        expected_mode = {
+            "recommended": "recommended",
+            "lowest_price": "price_asc",
+            "newest": "listed_at_desc",
+            "price_drop": "old_price_desc",
+        }[expectations.sort_mode]
+        if contract.get("sort_mode") != expected_mode:
+            issues.append("immutable service contract sort_mode does not match expectations.sort_mode")
+    if isinstance(query, Mapping):
+        _validate_agentic_persona_clause(query, persona_expansion, issues)
+        if rank_features_enabled is not None:
+            _validate_contract_rank_features(query, rank_features_enabled, persona_expansion, issues)
+    return persona_expansion
+
+
+def _normalized_shopper_summary(contract: Mapping[str, object]) -> str | None:
+    base_text_query = contract.get("base_text_query")
+    filters = contract.get("filter")
+    sort_mode = contract.get("sort_mode")
+    if not isinstance(base_text_query, str) or not isinstance(filters, list) or len(filters) < 2:
+        return None
+    price_clause = filters[1]
+    if not isinstance(price_clause, Mapping):
+        return None
+    range_clause = price_clause.get("range")
+    if not isinstance(range_clause, Mapping):
+        return None
+    price = range_clause.get("price")
+    if not isinstance(price, Mapping):
+        return None
+    price_limit = price.get("lte")
+    if not isinstance(price_limit, int) or isinstance(price_limit, bool):
+        return None
+    if sort_mode == "price_asc":
+        return f"cheapest {base_text_query} under {price_limit}"
+    if sort_mode == "listed_at_desc":
+        return f"newest {base_text_query} under {price_limit}"
+    if sort_mode == "old_price_desc":
+        return f"{base_text_query} with biggest price drops under {price_limit}"
+    if sort_mode == "recommended":
+        return f"{base_text_query} under {price_limit}"
+    return None
+
+
+def _validate_agentic_persona(value: object, issues: list[str]) -> str | None:
+    if not isinstance(value, Mapping):
+        issues.append("immutable service contract persona must be an object")
+        return None
+
+    anonymous_keys = {"id", "mode", "version"}
+    profiled_keys = {"archetype", "background", "id", "mental_model", "query_expansion", "version"}
+    keys = set(value)
+    if keys == anonymous_keys:
+        if value.get("id") != "anonymous" or value.get("mode") != "unprofiled" or value.get("version") != 1:
+            issues.append("anonymous persona must be exactly id=anonymous, version=1, mode=unprofiled")
+        return None
+    if keys != profiled_keys:
+        issues.append("profiled persona has invalid keys")
+        return None
+
+    persona_id = value.get("id")
+    if (
+        not isinstance(persona_id, str)
+        or len(persona_id) > AGENTIC_PERSONA_MAX_ID_LENGTH
+        or persona_id == "anonymous"
+        or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", persona_id) is None
+    ):
+        issues.append("profiled persona id must be a non-anonymous lowercase kebab-case identifier")
+    version = value.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= 1_000:
+        issues.append("profiled persona version must be an integer between 1 and 1000")
+
+    limits = {
+        "archetype": AGENTIC_PERSONA_MAX_ARCHETYPE_LENGTH,
+        "background": AGENTIC_PERSONA_MAX_BACKGROUND_LENGTH,
+        "mental_model": AGENTIC_PERSONA_MAX_MENTAL_MODEL_LENGTH,
+        "query_expansion": AGENTIC_PERSONA_MAX_QUERY_EXPANSION_LENGTH,
+    }
+    for field, limit in limits.items():
+        if not _is_canonical_persona_text(value.get(field), limit):
+            issues.append(f"profiled persona {field} must contain 1-{limit} canonical single-line characters")
+    if len(json.dumps(dict(value), ensure_ascii=False, separators=(",", ":"))) > AGENTIC_PERSONA_MAX_CONTEXT_LENGTH:
+        issues.append(f"profiled persona context must be at most {AGENTIC_PERSONA_MAX_CONTEXT_LENGTH} characters")
+    expansion = value.get("query_expansion")
+    return expansion if isinstance(expansion, str) and expansion else None
+
+
+def _is_canonical_persona_text(value: object, maximum: int) -> bool:
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= maximum
+        and "\n" not in value
+        and "\r" not in value
+        and re.sub(r"\s+", " ", value).strip() == value
+    )
+
+
+def _persona_multi_match_clause(expansion: str) -> dict[str, object]:
+    return {
+        "multi_match": {
+            "query": expansion,
+            "fields": AGENTIC_CANONICAL_MULTI_MATCH_FIELDS,
+            "operator": "or",
+            "boost": AGENTIC_PERSONA_EXPANSION_BOOST,
+        }
+    }
+
+
+def _validate_agentic_persona_clause(
+    query: Mapping[str, object],
+    persona_expansion: str | None,
+    issues: list[str],
+) -> None:
+    bool_query = query.get("bool")
+    if not isinstance(bool_query, Mapping):
+        return
+    should = bool_query.get("should", [])
+    should_clauses = should if isinstance(should, list) else []
+    direct_multi_match_clauses = [
+        clause for clause in should_clauses if isinstance(clause, Mapping) and set(clause) == {"multi_match"}
+    ]
+    if persona_expansion is None:
+        if direct_multi_match_clauses:
+            issues.append("anonymous persona must omit the persona multi_match clause")
+        return
+    expected = _persona_multi_match_clause(persona_expansion)
+    if not should_clauses or should_clauses[0] != expected or direct_multi_match_clauses != [expected]:
+        issues.append("profiled persona requires its exact multi_match as the first bool.should clause")
+
+
+def _validate_contract_rank_features(
+    query: Mapping[str, object],
+    enabled: bool,
+    persona_expansion: str | None,
+    issues: list[str],
+) -> None:
+    bool_query = query.get("bool")
+    if not isinstance(bool_query, Mapping):
+        return
+    expected_should: list[object] = []
+    if persona_expansion is not None:
+        expected_should.append(_persona_multi_match_clause(persona_expansion))
+    if enabled:
+        expected_should.extend(
+            {"rank_feature": {"field": field, "boost": boost}} for field, boost in AGENTIC_RECOMMENDED_RANK_FEATURES
+        )
+    actual_should = bool_query.get("should")
+    if expected_should:
+        if actual_should != expected_should:
+            issues.append("target body does not match the immutable service contract rank_features recipe")
+    elif actual_should is not None:
+        issues.append("target body must omit bool.should when rank_features is false and persona is unprofiled")
+
+
+def _validate_agentic_service_filters(value: object, issues: list[str]) -> None:
+    if not isinstance(value, list) or not 2 <= len(value) <= 2 + len(AGENTIC_SERVICE_FILTER_FIELDS):
+        issues.append("immutable service contract filters must use the canonical two-to-six-clause recipe")
+        return
+    if value[0] != {"term": {"availability": "active"}}:
+        issues.append("immutable service contract filters must start with availability=active")
+
+    price_clause = value[1]
+    price_limit: object = None
+    if isinstance(price_clause, Mapping) and set(price_clause) == {"range"}:
+        range_query = price_clause["range"]
+        if isinstance(range_query, Mapping) and set(range_query) == {"price"}:
+            price_bounds = range_query["price"]
+            if isinstance(price_bounds, Mapping) and set(price_bounds) == {"lte"}:
+                price_limit = price_bounds["lte"]
+    if (
+        not isinstance(price_limit, int)
+        or isinstance(price_limit, bool)
+        or not 1 <= price_limit <= AGENTIC_SERVICE_MAX_PRICE
+    ):
+        issues.append("immutable service contract filters must use price lte 1..20000 as the second clause")
+
+    previous_field_index = -1
+    for clause in value[2:]:
+        if not isinstance(clause, Mapping) or len(clause) != 1:
+            issues.append("immutable service contract facet filters must be canonical term or terms clauses")
+            continue
+        query_type, payload = next(iter(clause.items()))
+        if query_type not in {"term", "terms"} or not isinstance(payload, Mapping) or len(payload) != 1:
+            issues.append("immutable service contract facet filters must be canonical term or terms clauses")
+            continue
+        field, raw_filter_value = next(iter(payload.items()))
+        if field not in AGENTIC_SERVICE_FILTER_FIELDS:
+            issues.append(f"immutable service contract contains an unsupported facet filter: {field}")
+            continue
+        field_index = AGENTIC_SERVICE_FILTER_FIELDS.index(field)
+        if field_index <= previous_field_index:
+            issues.append("immutable service contract facet filters must follow runtime field order without duplicates")
+        previous_field_index = field_index
+
+        raw_values = raw_filter_value if query_type == "terms" else [raw_filter_value]
+        expected_minimum = 2 if query_type == "terms" else 1
+        if (
+            not isinstance(raw_values, list)
+            or not expected_minimum <= len(raw_values) <= AGENTIC_SERVICE_MAX_VALUES_PER_FIELD
+            or any(not _is_canonical_service_filter_value(item) for item in raw_values)
+            or len(set(raw_values)) != len(raw_values)
+        ):
+            issues.append(f"immutable service contract {field} filter values are not canonical")
+
+
+def _is_canonical_service_filter_value(value: object) -> bool:
+    if not isinstance(value, str) or not 1 <= len(value) <= AGENTIC_SERVICE_MAX_VALUE_LENGTH or value.strip() != value:
+        return False
+    decomposed = unicodedata.normalize("NFKD", value)
+    normalized = "".join(character for character in decomposed if not unicodedata.combining(character)).lower()
+    return value == normalized
 
 
 def _validate_query_structure(
@@ -269,10 +618,10 @@ def _validate_query_structure(
 
 def _has_nonblank_shopper_query(request: AgenticPlannerInput) -> bool:
     first_line = request.query_text.splitlines()[0].strip()
-    prefix = "Shopper request:"
-    if first_line.casefold().startswith(prefix.casefold()):
-        shopper_query = first_line[len(prefix) :].strip().removesuffix(".").strip()
-        return bool(shopper_query) and shopper_query.casefold() != "show all available items"
+    for prefix in ("Normalized shopper request:", "Shopper request (untrusted text):", "Shopper request:"):
+        if first_line.casefold().startswith(prefix.casefold()):
+            shopper_query = first_line[len(prefix) :].strip().removesuffix(".").strip()
+            return bool(shopper_query) and shopper_query.casefold() != "show all available items"
     return bool(first_line)
 
 
@@ -491,8 +840,16 @@ def _validate_agentic_query_semantics(
             )
         elif query_type == "rank_feature":
             field = payload.get("field")
+            unsupported = sorted(str(key) for key in set(payload) - {"boost", "field"})
+            if unsupported:
+                issues.append(f"{path}.rank_feature has unsupported keys: {', '.join(unsupported)}")
             if not isinstance(field, str) or field_types.get(field) != "rank_feature":
                 issues.append(f"{path}.rank_feature requires a mapped rank_feature field: {field}")
+            boost = payload.get("boost")
+            if boost is not None and (
+                not isinstance(boost, (int, float)) or isinstance(boost, bool) or not math.isfinite(boost)
+            ):
+                issues.append(f"{path}.rank_feature.boost must be a finite number")
 
         if query_type == "bool":
             _validate_conjunctive_constraints(payload, path, field_definitions, issues)
@@ -916,7 +1273,12 @@ def _inspect_source_fields(value: object, path: str, allowed_fields: Sequence[st
             issues.append(f"{path} contains a non-string field")
 
 
-def _inspect_sort(value: object, allowed_fields: Sequence[str], issues: list[str]) -> None:
+def _inspect_sort(
+    value: object,
+    allowed_fields: Sequence[str],
+    issues: list[str],
+    field_types: Mapping[str, object] | None = None,
+) -> None:
     if value is None:
         return
     if not isinstance(value, list):
@@ -935,6 +1297,8 @@ def _inspect_sort(value: object, allowed_fields: Sequence[str], issues: list[str
             continue
         if field != "_score":
             _check_field(field, f"body.sort[{index}]", allowed_fields, issues)
+            if field_types and field_types.get(field) in {"rank_feature", "rank_features", "text"}:
+                issues.append(f"body.sort[{index}] uses unsortable mapped field: {field}")
         if not isinstance(options, Mapping):
             issues.append(f"body.sort[{index}].{field} must be an options object")
             continue
@@ -947,15 +1311,12 @@ def _inspect_sort(value: object, allowed_fields: Sequence[str], issues: list[str
             issues.append(f"body.sort[{index}].{field}.missing must be _first or _last")
 
 
-def _validate_expected_sort(value: object, sort_mode: str, issues: list[str]) -> None:
+def _validate_expected_sort(body: Mapping[str, object], sort_mode: str, issues: list[str]) -> None:
+    value = body.get("sort")
     if sort_mode == "recommended":
-        if value is None:
+        if "sort" not in body:
             return
-        if not isinstance(value, list) or len(value) != 1:
-            issues.append("body.sort must be omitted or contain exactly one _score desc clause for recommended ranking")
-            return
-        if _sort_clause(value, 0) != ("_score", "desc", None):
-            issues.append("body.sort must be omitted or contain exactly one _score desc clause for recommended ranking")
+        issues.append("body.sort must be omitted for recommended ranking")
         return
 
     requirements = {
@@ -974,6 +1335,118 @@ def _validate_expected_sort(value: object, sort_mode: str, issues: list[str]) ->
         issues.append(f"body.sort must use {field} {order}{suffix} as the primary sort for {sort_mode}")
     if _sort_clause(value, 1) != ("_score", "desc", None):
         issues.append(f"body.sort must use _score desc as the secondary sort for {sort_mode}")
+
+
+def _validate_expected_text_recipe(
+    query: Mapping[str, object],
+    sort_mode: str,
+    has_persona_expansion: bool,
+    issues: list[str],
+) -> None:
+    bool_query = query.get("bool")
+    if not isinstance(bool_query, Mapping):
+        issues.append("body.query must use the canonical root bool recipe")
+        return
+    expected_keys = (
+        {"filter", "must", "should"} if sort_mode == "recommended" or has_persona_expansion else {"filter", "must"}
+    )
+    if set(bool_query) != expected_keys:
+        issues.append(f"body.query.bool keys must be exactly: {', '.join(sorted(expected_keys))}")
+
+    must = bool_query.get("must")
+    if not isinstance(must, list) or len(must) != 1 or not isinstance(must[0], Mapping):
+        issues.append("body.query.bool.must must contain exactly one direct multi_match")
+        return
+    clause = must[0]
+    if set(clause) != {"multi_match"} or not isinstance(clause.get("multi_match"), Mapping):
+        issues.append("body.query.bool.must must contain exactly one direct multi_match")
+        return
+    multi_match = clause["multi_match"]
+    assert isinstance(multi_match, Mapping)
+    expected_keys = {"fields", "operator", "query"}
+    expected_fields = AGENTIC_CANONICAL_MULTI_MATCH_FIELDS
+    if set(multi_match) != expected_keys:
+        issues.append("canonical multi_match keys must be exactly fields, operator, and query")
+    if multi_match.get("fields") != expected_fields:
+        issues.append("canonical multi_match fields do not match the service recipe")
+    query_text = multi_match.get("query")
+    if not isinstance(query_text, str) or not query_text.strip():
+        issues.append("canonical multi_match query must be nonblank text")
+    if multi_match.get("operator") not in {"and", "or"}:
+        issues.append("canonical multi_match operator must be and or or")
+
+
+def _validate_expected_ranking(
+    query: Mapping[str, object],
+    sort_mode: str,
+    persona_expansion: str | None,
+    issues: list[str],
+) -> None:
+    clauses: list[tuple[str, object, str]] = []
+
+    def visit(node: object, path: str) -> None:
+        if not isinstance(node, Mapping) or len(node) != 1:
+            return
+        query_type, payload = next(iter(node.items()))
+        if not isinstance(payload, Mapping):
+            return
+        if query_type == "rank_feature":
+            clauses.append((str(payload.get("field")), payload.get("boost"), path))
+            return
+        if query_type != "bool":
+            return
+        for clause_name in ("filter", "must", "should"):
+            children = payload.get(clause_name, [])
+            if isinstance(children, Mapping):
+                children = [children]
+            if isinstance(children, list):
+                for index, child in enumerate(children):
+                    visit(child, f"{path}.bool.{clause_name}[{index}]")
+
+    visit(query, "body.query")
+    bool_query = query.get("bool")
+    should = bool_query.get("should") if isinstance(bool_query, Mapping) else None
+    expected_should: list[object] = []
+    if persona_expansion is not None:
+        expected_should.append(_persona_multi_match_clause(persona_expansion))
+    if sort_mode == "recommended":
+        expected_should.extend(
+            {"rank_feature": {"field": field, "boost": boost}} for field, boost in AGENTIC_RECOMMENDED_RANK_FEATURES
+        )
+
+    if not expected_should:
+        if should is not None or clauses:
+            issues.append(f"bool.should and rank_feature clauses must be omitted for {sort_mode}")
+        return
+    if sort_mode != "recommended" and clauses:
+        issues.append(f"rank_feature clauses must be omitted for {sort_mode}")
+    if not isinstance(should, list) or should != expected_should:
+        if sort_mode == "recommended" and persona_expansion is None:
+            issues.append("recommended ranking requires exactly three canonical rank_feature clauses")
+        elif persona_expansion is not None:
+            issues.append("personalization and ranking must use the exact canonical bool.should recipe")
+        else:
+            issues.append(f"bool.should must use the canonical recipe for {sort_mode}")
+        return
+
+    expected = dict(AGENTIC_RECOMMENDED_RANK_FEATURES) if sort_mode == "recommended" else {}
+    if len(clauses) != len(expected):
+        if sort_mode == "recommended":
+            issues.append("recommended ranking requires exactly three canonical rank_feature clauses")
+        else:
+            issues.append(f"rank_feature clauses must be omitted for {sort_mode}")
+        return
+    seen: set[str] = set()
+    for field, boost, path in clauses:
+        if re.fullmatch(r"body\.query\.bool\.should\[\d+\]", path) is None or expected.get(field) != boost:
+            issues.append(
+                "recommended rank_feature clauses must use canonical fields, boosts, and bool.should placement"
+            )
+            return
+        if field in seen:
+            issues.append(f"recommended rank_feature field is duplicated: {field}")
+            return
+        seen.add(field)
 
 
 def _sort_clause(value: object, index: int) -> tuple[str, str | None, str | None] | None:
@@ -1005,6 +1478,14 @@ def constraint_is_present(body: Mapping[str, object], constraint: Constraint) ->
         if _clause_contains_constraint(clause, constraint):
             return True
     return False
+
+
+def _constraint_filter_clause(constraint: Constraint) -> dict[str, object]:
+    if constraint.op in {"term", "eq"}:
+        return {"term": {constraint.field: constraint.value}}
+    if constraint.op == "terms":
+        return {"terms": {constraint.field: constraint.value}}
+    return {"range": {constraint.field: {constraint.op: constraint.value}}}
 
 
 def _clause_contains_constraint(clause: object, constraint: Constraint) -> bool:

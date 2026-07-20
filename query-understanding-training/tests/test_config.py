@@ -1,7 +1,14 @@
 import re
+import tomllib
 from pathlib import Path
 
+from query_understanding import __version__
 from query_understanding.config import TrainingConfig, load_training_config
+
+
+def test_module_version_matches_package_metadata(project_root: Path) -> None:
+    package_metadata = tomllib.loads((project_root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert __version__ == package_metadata["project"]["version"]
 
 
 def test_config_resolves_paths_and_pins_model(config: TrainingConfig) -> None:
@@ -10,12 +17,13 @@ def test_config_resolves_paths_and_pins_model(config: TrainingConfig) -> None:
     assert config.data.train_file.is_absolute()
     assert config.data.eval_file.is_absolute()
     assert config.data.policy_file.is_absolute()
-    assert config.objective.name == "opensearch_agentic_query_planner_v1"
+    assert config.objective.name == "opensearch_agentic_query_planner_v3"
     assert config.objective.system_prompt_file.is_absolute()
     assert config.objective.system_prompt_file.exists()
     assert config.objective.user_prompt_file.is_absolute()
     assert config.objective.user_prompt_file.exists()
     assert config.trainer.output_dir.is_absolute()
+    assert config.trainer.output_dir.name == "qlora-agentic-v3"
 
 
 def test_config_uses_documented_qlora_baseline(config: TrainingConfig) -> None:
@@ -55,7 +63,8 @@ def test_macos_config_uses_native_mps_compatible_lora(project_root: Path) -> Non
     assert config.quantization.load_in_4bit is False
     assert config.quantization.compute_dtype == "float16"
     assert config.trainer.optim == "adamw_torch"
+    assert config.trainer.sequence_length == 2048
     assert config.trainer.bf16 is False
     assert config.trainer.fp16 is True
     assert config.trainer.tf32 is False
-    assert config.trainer.output_dir.name == "lora-macos-agentic-v1"
+    assert config.trainer.output_dir.name == "lora-macos-agentic-v3"

@@ -15,8 +15,8 @@ def _first_example(config: TrainingConfig) -> TrainingExample:
 
 def test_training_fixture_satisfies_contract(config: TrainingConfig) -> None:
     example = _first_example(config)
-    assert "Shopper request: dress watch." in example.input.query_text
-    assert example.objective_version == "opensearch_agentic_query_planner_v1"
+    assert "Normalized shopper request: Dress watch under 15000" in example.input.query_text
+    assert example.objective_version == "opensearch_agentic_query_planner_v3"
     assert example.target_body.size == 24
     assert "_source" not in example.target_body.to_opensearch()
     assert "_doc" in example.input.index_mapping
@@ -48,11 +48,19 @@ def test_target_requires_exact_result_size(config: TrainingConfig) -> None:
         TrainingExample.model_validate(payload)
 
 
-def test_target_total_hits_comparison_is_type_strict(config: TrainingConfig) -> None:
+@pytest.mark.parametrize("value", (True, False))
+def test_target_rejects_boolean_total_hits(value: bool, config: TrainingConfig) -> None:
     payload = json.loads(_first_example(config).model_dump_json())
-    payload["expectations"]["track_total_hits"] = True
-    payload["target_body"]["track_total_hits"] = 1
-    with pytest.raises(ValidationError, match=r"expectations\.track_total_hits"):
+    payload["expectations"]["track_total_hits"] = value
+    payload["target_body"]["track_total_hits"] = value
+    with pytest.raises(ValidationError, match="track_total_hits"):
+        TrainingExample.model_validate(payload)
+
+
+def test_native_query_text_limit_is_enforced(config: TrainingConfig) -> None:
+    payload = json.loads(_first_example(config).model_dump_json())
+    payload["input"]["query_text"] = "x" * 1001
+    with pytest.raises(ValidationError, match="at most 1000 characters"):
         TrainingExample.model_validate(payload)
 
 
@@ -64,6 +72,6 @@ def test_json_schema_forbids_extra_top_level_fields() -> None:
 
 def test_committed_json_schema_matches_model(project_root: Path) -> None:
     committed = json.loads(
-        (project_root / "schemas" / "opensearch_agentic_query_planner_v1.schema.json").read_text(encoding="utf-8")
+        (project_root / "schemas" / "opensearch_agentic_query_planner_v3.schema.json").read_text(encoding="utf-8")
     )
     assert committed == TrainingExample.model_json_schema()

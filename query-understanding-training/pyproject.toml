@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "secondhand-query-understanding"
-version = "0.1.0"
+version = "0.3.0"
 description = "QLoRA fine-tuning and validation tools for native OpenSearch Agentic Search query planning."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

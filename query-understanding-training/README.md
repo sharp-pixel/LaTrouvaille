@@ -2,19 +2,19 @@
 
 This Python project fine-tunes the model used by OpenSearch's native Agentic Search `QueryPlanningTool`. The serving objective is deliberately narrow: given the exact native question, index mapping, and `query_fields`, emit one complete, policy-checked OpenSearch request body.
 
-The assistant completion contains `size`, `track_total_hits`, `query`, and any requested `sort`. It never contains an index, search pipeline, `_source`, compiler envelope, intent metadata, confidence scores, or prose. OpenSearch preserves the service-owned `_source` while replacing the rest of the incoming search body with the model-generated body.
+The assistant completion contains `size`, integer `track_total_hits` (0–10,000), `query`, and any requested `sort`. It never contains an index, search pipeline, `_source`, compiler envelope, intent metadata, confidence scores, or prose. OpenSearch preserves the service-owned `_source` while replacing the rest of the incoming search body with the model-generated body.
 
 ## What is included
 
 - A `uv` project with a committed lockfile, CUDA PyTorch for Linux/Windows x86_64, and native MPS PyTorch for Apple Silicon macOS.
-- A strict `opensearch_agentic_query_planner_v1` dataset contract.
+- A strict `opensearch_agentic_query_planner_v3` dataset contract.
 - Shared system and user prompt assets used by both training and OpenSearch agent registration.
 - Canonical JSONL fixtures and completion-only chat conversion.
 - Dataset, index, mapping/query-field intersection, top-level key, sort, required-filter, query-type, clause-count, `size`, and `k` validation.
 - A text-only QLoRA runner for the multimodal Ministral checkpoint.
 - Explicit assistant-token masking; target JSON is rejected when it exceeds the sequence limit, never truncated.
 - LoRA module selection restricted to `language_model`; vision and projector weights remain frozen.
-- Structural evaluation for JSON validity, request-body validity, policy validity, exact request match, and required-filter recall.
+- Structural evaluation for JSON validity, request-body validity, policy validity, exact request match, exact persona-clause match, and required-filter recall.
 - Run manifests with objective, prompt, dataset, policy, lock, and immutable base-model hashes.
 
 The checked-in JSONL files are executable fixtures, not a production training corpus. The design calls for 1,000–5,000 reviewed SFT examples and at least 1,000 held-out labeled queries.
@@ -59,7 +59,7 @@ uv run --locked --no-editable quft doctor --training
 uv run --locked --no-editable quft train --config configs/lora-macos.yaml --execute
 ```
 
-The 8B multimodal checkpoint is memory intensive without 4-bit quantization. The macOS profile reduces the sequence length to 1,024, but a high-memory Apple Silicon machine is still required for actual training. Validation, dry runs, and the unit suite do not require the training group:
+The 8B multimodal checkpoint is memory intensive without 4-bit quantization. The macOS profile uses a 2,048-token sequence length so the native double-encoded mapping prompt and complete JSON target are never truncated; a high-memory Apple Silicon machine is still required for actual training. Validation, dry runs, and the unit suite do not require the training group:
 
 ```bash
 uv sync --locked --no-editable
@@ -77,7 +77,7 @@ uv run --no-editable quft show-config
 uv run --no-editable quft validate-data
 
 # Export the native objective row schema
-uv run --no-editable quft export-schema --output schemas/opensearch_agentic_query_planner_v1.schema.json
+uv run --no-editable quft export-schema --output schemas/opensearch_agentic_query_planner_v3.schema.json
 
 # Validate the setup without downloading model weights
 uv run --no-editable quft train
@@ -98,11 +98,11 @@ Prediction rows use this shape:
 
 The design document leaves a few points implicit. This implementation makes them reproducible:
 
-- Source rows store the exact native `query_text`, mapping, query fields, evaluation expectations, and target body. Metadata never enters the assistant completion.
+- Source rows store the exact native `query_text`, including a deterministic normalized first-line summary, its compact immutable service contract, mapping, query fields, evaluation expectations, and target body. Raw shopper wording is excluded. The v3 contract owns filters, size, integer hit counting, sort mode, `base_text_query`, `text_operator`, and a bounded nested persona. Explicit sorts additionally require `rank_features=false`; recommended mode omits that key. Metadata never enters the assistant completion. Oversized three-line envelopes are rejected rather than truncating the deterministic summary.
 - Training and `scripts/configure-agentic-search.mjs` load the same packaged system and user prompt files, preventing serving/training prompt drift.
 - The offline renderer mirrors QueryPlanningTool's JSON-string serialization of the OpenSearch 3.7 `_doc` mapping source and `query_fields`; this shape was verified against a live native request.
 - Completion labels are masked explicitly; training does not depend on `{% generation %}` markers in the model chat template.
-- Persona and expertise annotations are excluded from the native objective because the prototype does not expose personalized ranking. Evaluation personas remain UBI context only.
+- The core `bool.must` query always copies `base_text_query` and `text_operator` exactly. A profiled persona contributes one exact, low-boost `multi_match` as the first `bool.should` clause; the anonymous persona contributes no clause. Persona context cannot change filters, core relevance, sorting, limits, or hit counting.
 - `_source` is omitted from every target because the agentic request processor preserves the incoming service-owned `_source`.
 - Explicit sort modes are learned inside the generated body; the incoming `agentic` request must not carry an outer `sort`.
 - The legacy `psg_query_compiler_v1` classes/schema remain only as offline annotation compatibility and are not serving targets.

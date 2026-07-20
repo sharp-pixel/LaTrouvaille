@@ -27,6 +27,7 @@ class EvaluationReport:
     request_body_validity: float
     dsl_policy_validity: float
     exact_request_match: float
+    persona_clause_exact_match: float
     required_constraint_recall: float
 
     def to_dict(self) -> dict[str, object]:
@@ -37,7 +38,7 @@ def evaluate_predictions(dataset_path: Path, predictions_path: Path, policy: Com
     examples = read_examples(dataset_path, policy)
     predictions = _read_predictions(predictions_path)
     total = len(examples)
-    found = json_valid = request_body_valid = policy_valid = exact_match = 0
+    found = json_valid = request_body_valid = policy_valid = exact_match = persona_match = 0
     constraints_found = constraints_total = 0
 
     for example in examples:
@@ -58,14 +59,18 @@ def evaluate_predictions(dataset_path: Path, predictions_path: Path, policy: Com
             continue
         request_body_valid += 1
         body = request_body.to_opensearch()
+        policy_body = decoded if isinstance(decoded, dict) else body
         try:
-            validate_agentic_request_body(example.input, body, policy, example.expectations)
+            validate_agentic_request_body(example.input, policy_body, policy, example.expectations)
         except PolicyViolation:
             pass
         else:
             policy_valid += 1
 
         exact_match += decoded == example.target_body.to_opensearch()
+        persona_match += _persona_clause_positions(body) == _persona_clause_positions(
+            example.target_body.to_opensearch()
+        )
         constraints_found += sum(constraint_is_present(body, constraint) for constraint in required_constraints)
 
     return EvaluationReport(
@@ -75,8 +80,35 @@ def evaluate_predictions(dataset_path: Path, predictions_path: Path, policy: Com
         request_body_validity=_ratio(request_body_valid, total),
         dsl_policy_validity=_ratio(policy_valid, total),
         exact_request_match=_ratio(exact_match, total),
+        persona_clause_exact_match=_ratio(persona_match, total),
         required_constraint_recall=_ratio(constraints_found, constraints_total),
     )
+
+
+def _persona_clause_positions(body: object) -> list[tuple[tuple[str | int, ...], object]]:
+    """Return every multi-match clause with its full query path.
+
+    The first required ``bool.must`` multi-match is part of this signature on
+    purpose. Comparing the full path-aware signature ensures that a persona
+    clause cannot be copied into ``must``, ``filter``, or a nested bool while
+    the expected ``bool.should`` clause still makes the persona metric pass.
+    """
+
+    positions: list[tuple[tuple[str | int, ...], object]] = []
+
+    def visit(value: object, path: tuple[str | int, ...]) -> None:
+        if isinstance(value, dict):
+            if set(value) == {"multi_match"}:
+                positions.append((path, value))
+            for key, child in value.items():
+                visit(child, (*path, key))
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, (*path, index))
+
+    if isinstance(body, dict) and isinstance(body.get("query"), dict):
+        visit(body["query"], ("query",))
+    return positions
 
 
 def _read_predictions(path: Path) -> dict[str, object]:

@@ -1,7 +1,7 @@
 const APPLICATION = "maison-reuse-search-prototype";
 const STORAGE_KEY = "maison-reuse-ubi-events";
 const CLIENT_KEY = "maison-reuse-ubi-client-id";
-const ENDPOINT = import.meta.env.VITE_UBI_ENDPOINT || "http://127.0.0.1:8787/ubi";
+const ENDPOINT = import.meta.env?.VITE_UBI_ENDPOINT || "http://127.0.0.1:8787/ubi";
 
 function uuid() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -50,6 +50,28 @@ function personaAttributes(persona) {
   };
 }
 
+export function compactQueryPlan(queryPlan, rewrittenQuery) {
+  if (!queryPlan || typeof queryPlan !== "object" || Array.isArray(queryPlan)) return queryPlan;
+  const {
+    baseRewrite,
+    personalizedRewrite: _personalizedRewrite,
+    personalization,
+    rewritten,
+    ...compact
+  } = queryPlan;
+  const canonicalRewrite = baseRewrite || rewritten;
+
+  if (canonicalRewrite && canonicalRewrite !== rewrittenQuery) compact.rewritten = canonicalRewrite;
+  if (personalization && typeof personalization === "object" && !Array.isArray(personalization)) {
+    compact.personalization = {
+      personaId: personalization.personaId,
+      personaVersion: personalization.personaVersion,
+      status: personalization.status,
+    };
+  }
+  return compact;
+}
+
 export function recordUbiQuery({ userQuery, rewrittenQuery, results, queryPlan, filters, sort, persona }) {
   const record = {
     application: APPLICATION,
@@ -62,7 +84,7 @@ export function recordUbiQuery({ userQuery, rewrittenQuery, results, queryPlan, 
     query_response_object_ids: results.map((item) => item.item_id),
     query_attributes: {
       rewritten_query: rewrittenQuery,
-      query_plan: queryPlan,
+      query_plan: compactQueryPlan(queryPlan, rewrittenQuery),
       filters,
       sort,
       result_count: results.length,

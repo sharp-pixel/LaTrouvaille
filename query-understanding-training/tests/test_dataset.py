@@ -11,8 +11,8 @@ def test_checked_in_datasets_validate(config: TrainingConfig, policy: CompilerPo
     eval_report = validate_dataset(config.data.eval_file, policy)
     assert train_report.ok, train_report.issues
     assert eval_report.ok, eval_report.issues
-    assert train_report.total == 6
-    assert eval_report.total == 6
+    assert train_report.total == 10
+    assert eval_report.total == 10
 
 
 def test_source_row_becomes_completion_only_conversation(config: TrainingConfig, policy: CompilerPolicy) -> None:
@@ -25,7 +25,11 @@ def test_source_row_becomes_completion_only_conversation(config: TrainingConfig,
     assert prompt[0]["role"] == "system"
     assert prompt[1]["role"] == "user"
     assert completion[0]["role"] == "assistant"
-    assert "Question: Shopper request: dress watch." in prompt[1]["content"]
+    assert "Question: Normalized shopper request: Dress watch under 15000" in prompt[1]["content"]
+    assert '"id":"watch-collector"' in prompt[1]["content"]
+    assert (
+        '"query_expansion":"dress watch reference provenance full set serviced collector steel"' in prompt[1]["content"]
+    )
     user_content = prompt[1]["content"]
     assert isinstance(user_content, str)
     mapping_line = next(line for line in user_content.splitlines() if line.startswith("Mapping JSON string: "))
@@ -39,10 +43,109 @@ def test_source_row_becomes_completion_only_conversation(config: TrainingConfig,
     assert decoded_completion == example.target_body.to_opensearch()
     assert "schema_version" not in decoded_completion
     assert "opensearch" not in decoded_completion
+    assert decoded_completion["query"]["bool"]["should"][0]["multi_match"]["boost"] == 0.35
 
 
 def test_canonical_json_is_stable() -> None:
     assert canonical_json({"z": 1, "a": {"b": 2}}) == '{"a":{"b":2},"z":1}'
+
+
+def test_fixtures_use_canonical_persona_contexts(config: TrainingConfig, policy: CompilerPolicy) -> None:
+    expected_expansions = {
+        "first-luxury-purchase": "excellent condition very good condition verified timeless versatile value",
+        "fashion-insider": "rare archive vintage runway editorial limited edition distinctive",
+        "watch-collector": "dress watch reference provenance full set serviced collector steel",
+    }
+    seen_ids: set[str] = set()
+    anonymous_examples = 0
+    for path in (config.data.train_file, config.data.eval_file):
+        for example in read_examples(path, policy):
+            contract_line = example.input.query_text.splitlines()[1]
+            contract = json.loads(contract_line.removeprefix("Immutable service contract: "))
+            assert isinstance(contract["track_total_hits"], int)
+            assert not isinstance(contract["track_total_hits"], bool)
+            if contract["sort_mode"] == "recommended":
+                assert "rank_features" not in contract
+                assert list(contract) == [
+                    "filter",
+                    "size",
+                    "track_total_hits",
+                    "sort_mode",
+                    "text_operator",
+                    "base_text_query",
+                    "persona",
+                ]
+            else:
+                assert contract["rank_features"] is False
+                assert list(contract) == [
+                    "filter",
+                    "size",
+                    "track_total_hits",
+                    "sort_mode",
+                    "rank_features",
+                    "text_operator",
+                    "base_text_query",
+                    "persona",
+                ]
+            persona = contract["persona"]
+            persona_id = persona["id"]
+            seen_ids.add(persona_id)
+            bool_query = example.target_body.to_opensearch()["query"]["bool"]
+            should = bool_query.get("should", [])
+            if persona_id == "anonymous":
+                anonymous_examples += 1
+                assert persona == {"id": "anonymous", "version": 1, "mode": "unprofiled"}
+                assert not should or "multi_match" not in should[0]
+                continue
+            assert persona["query_expansion"] == expected_expansions[persona_id]
+            assert should[0]["multi_match"] == {
+                "query": expected_expansions[persona_id],
+                "fields": ["title^5", "brand^3", "canonical_text^3", "description"],
+                "operator": "or",
+                "boost": 0.35,
+            }
+
+    assert seen_ids == {"anonymous", *expected_expansions}
+    assert anonymous_examples >= 5
+
+
+def test_train_fixture_covers_each_sort_with_profiled_and_anonymous_personas(
+    config: TrainingConfig,
+    policy: CompilerPolicy,
+) -> None:
+    examples = read_examples(config.data.train_file, policy)
+    combinations: set[tuple[str, bool]] = set()
+    for example in examples:
+        anonymous = '"persona":{"id":"anonymous","version":1,"mode":"unprofiled"}' in example.input.query_text
+        combinations.add((example.expectations.sort_mode, not anonymous))
+        if anonymous and example.expectations.sort_mode != "recommended":
+            assert "should" not in example.target_body.to_opensearch()["query"]["bool"]
+
+    assert combinations == {
+        (sort_mode, profiled)
+        for sort_mode in ("recommended", "lowest_price", "newest", "price_drop")
+        for profiled in (False, True)
+    }
+
+
+def test_train_fixture_contains_persona_only_counterfactual(
+    config: TrainingConfig,
+    policy: CompilerPolicy,
+) -> None:
+    persona_ids_by_controls: dict[str, set[str]] = {}
+    summaries_by_controls: dict[str, set[str]] = {}
+    for example in read_examples(config.data.train_file, policy):
+        lines = example.input.query_text.splitlines()
+        contract = json.loads(lines[1].removeprefix("Immutable service contract: "))
+        persona = contract.pop("persona")
+        controls = canonical_json(contract)
+        persona_ids_by_controls.setdefault(controls, set()).add(persona["id"])
+        summaries_by_controls.setdefault(controls, set()).add(lines[0])
+
+    assert any(
+        len(persona_ids) >= 2 and len(summaries_by_controls[controls]) == 1
+        for controls, persona_ids in persona_ids_by_controls.items()
+    )
 
 
 def test_duplicate_ids_are_rejected(

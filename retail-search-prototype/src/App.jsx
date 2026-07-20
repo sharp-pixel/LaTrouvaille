@@ -14,7 +14,13 @@ import {
   X,
 } from "lucide-react";
 import { categoryTiles, filterGroups, navItems, popularSearches, products } from "./data/catalog.js";
-import { defaultPersona, getPersonaById, personas } from "./data/personas.js";
+import {
+  defaultPersona,
+  getPersonaById,
+  getPersonaSearchRequestIdentity,
+  personas,
+} from "./data/personas.js";
+import { buildLocalPersonalizationPlan } from "./lib/agentic-search.js";
 import { createQueryUnderstanding, localSearchProducts } from "./lib/search.js";
 import { getRecentUbiEvents, recordUbiEvent, recordUbiQuery } from "./lib/ubi.js";
 
@@ -89,6 +95,8 @@ export function App() {
   const [ubiEvents, setUbiEvents] = useState(() => getRecentUbiEvents().slice(0, 6));
   const [searchResponse, setSearchResponse] = useState({
     products: null,
+    personaId: null,
+    queryPlan: null,
     source: "local",
     status: "idle",
     tookMs: null,
@@ -97,7 +105,20 @@ export function App() {
     enhancements: { querqy: "not_called", rules: [] },
   });
 
-  const activePlan = useMemo(() => createQueryUnderstanding(activeQuery, products), [activeQuery]);
+  const localPlan = useMemo(() => createQueryUnderstanding(activeQuery, products), [activeQuery]);
+  const localPersonalizationPlan = useMemo(
+    () => buildLocalPersonalizationPlan(localPlan, activePersona),
+    [activePersona, localPlan],
+  );
+  const activePlan = useMemo(() => {
+    const returnedPlan = searchResponse.personaId === activePersona.id ? searchResponse.queryPlan : null;
+    if (!returnedPlan) return localPersonalizationPlan;
+    return {
+      ...localPlan,
+      ...returnedPlan,
+      rewritten: returnedPlan.personalizedRewrite || returnedPlan.rewritten || localPlan.rewritten,
+    };
+  }, [activePersona.id, localPersonalizationPlan, localPlan, searchResponse.personaId, searchResponse.queryPlan]);
   const suggestions = useMemo(() => {
     const seed = query.trim().toLowerCase();
     if (!seed) return popularSearches.slice(0, 6);
@@ -105,8 +126,8 @@ export function App() {
   }, [query]);
 
   const localProducts = useMemo(
-    () => localSearchProducts(products, { query: activeQuery, filters, maxPrice, sort }),
-    [activeQuery, filters, maxPrice, sort],
+    () => localSearchProducts(products, { query: activeQuery, filters, maxPrice, sort, persona: activePersona }),
+    [activePersona, activeQuery, filters, maxPrice, sort],
   );
   const sortedProducts = searchResponse.products ?? localProducts;
 
@@ -116,6 +137,8 @@ export function App() {
     const startedAt = performance.now();
     setSearchResponse({
       products: localProducts,
+      personaId: activePersona.id,
+      queryPlan: localPersonalizationPlan,
       source: "local",
       status: "loading",
       tookMs: null,
@@ -127,7 +150,14 @@ export function App() {
     fetch(`${SEARCH_ENDPOINT}/search`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query: activeQuery, filters, maxPrice, sort, size: 96 }),
+      body: JSON.stringify({
+        query: activeQuery,
+        filters,
+        maxPrice,
+        sort,
+        size: 96,
+        ...getPersonaSearchRequestIdentity(activePersona.id),
+      }),
       signal: controller.signal,
     })
       .then((response) => {
@@ -138,6 +168,9 @@ export function App() {
         if (controller.signal.aborted) return;
         setSearchResponse({
           products: payload.products || [],
+          personaId: activePersona.id,
+          queryPlan:
+            payload.queryPlan || (payload.source === "local-fallback" ? localPersonalizationPlan : null),
           source: payload.source || "opensearch",
           status: payload.source === "local-fallback" ? "degraded" : "ready",
           tookMs: payload.tookMs ?? Math.round(performance.now() - startedAt),
@@ -150,6 +183,8 @@ export function App() {
         if (controller.signal.aborted) return;
         setSearchResponse({
           products: localProducts,
+          personaId: activePersona.id,
+          queryPlan: localPersonalizationPlan,
           source: "local",
           status: "degraded",
           tookMs: Math.round(performance.now() - startedAt),
@@ -160,23 +195,24 @@ export function App() {
       });
 
     return () => controller.abort();
-  }, [activeQuery, filters, localProducts, maxPrice, mode, sort]);
+  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, localProducts, maxPrice, mode, sort]);
 
   useEffect(() => {
     if (mode !== "results") return;
     if (searchResponse.status === "idle" || searchResponse.status === "loading") return;
+    if (searchResponse.personaId !== activePersona.id) return;
     const signature = JSON.stringify({ activeQuery, filters, maxPrice, sort, personaId: activePersona.id });
     if (lastQuerySignature.current === signature) return;
     lastQuerySignature.current = signature;
 
     const queryRecord = recordUbiQuery({
       userQuery: activeQuery,
-      rewrittenQuery: activePlan.rewritten,
+      rewrittenQuery:
+        searchResponse.queryPlan?.personalizedRewrite || searchResponse.queryPlan?.rewritten || localPlan.rewritten,
       queryPlan: {
-        ...activePlan,
+        ...(searchResponse.queryPlan || localPlan),
         source: searchResponse.source,
         took_ms: searchResponse.tookMs,
-        tier2: searchResponse.enhancements,
       },
       results: sortedProducts.slice(0, 24),
       filters,
@@ -185,7 +221,7 @@ export function App() {
     });
     setUbiQueryId(queryRecord.query_id);
     setUbiEvents(getRecentUbiEvents().slice(0, 6));
-  }, [activePersona, activePlan, activeQuery, filters, maxPrice, mode, searchResponse.source, searchResponse.status, searchResponse.tookMs, sort, sortedProducts]);
+  }, [activePersona, activeQuery, filters, localPlan, maxPrice, mode, searchResponse.personaId, searchResponse.queryPlan, searchResponse.source, searchResponse.status, searchResponse.tookMs, sort, sortedProducts]);
 
   const trackEvent = (payload) => {
     if (!ubiQueryId) return;

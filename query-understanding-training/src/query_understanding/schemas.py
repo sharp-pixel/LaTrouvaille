@@ -7,9 +7,9 @@ from collections.abc import Mapping
 from enum import StrEnum
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictInt, model_validator
 
-OBJECTIVE_VERSION = "opensearch_agentic_query_planner_v1"
+OBJECTIVE_VERSION = "opensearch_agentic_query_planner_v3"
 SCHEMA_VERSION = OBJECTIVE_VERSION
 LEGACY_SCHEMA_VERSION = "psg_query_compiler_v1"
 
@@ -153,7 +153,7 @@ class QueryCompilerOutput(StrictModel):
 
 
 class AgenticPlannerInput(StrictModel):
-    query_text: str = Field(min_length=1, max_length=8_000)
+    query_text: str = Field(min_length=1, max_length=1_000)
     index_name: str = Field(min_length=1, max_length=200)
     index_mapping: dict[str, JsonValue]
     query_fields: list[str] = Field(min_length=1)
@@ -190,7 +190,7 @@ def agentic_mapping_properties(index_mapping: Mapping[str, JsonValue]) -> dict[s
 class AgenticExpectations(StrictModel):
     required_filters: list[Constraint] = Field(default_factory=list)
     result_size: StrictInt = Field(ge=1, le=96)
-    track_total_hits: StrictBool | StrictInt = 10_000
+    track_total_hits: StrictInt = Field(default=10_000, ge=0, le=10_000)
     sort_mode: Literal["recommended", "lowest_price", "newest", "price_drop"] = "recommended"
 
 
@@ -198,7 +198,7 @@ class AgenticRequestBody(StrictModel):
     """Executable body returned by QueryPlanningTool, excluding service-owned `_source`."""
 
     size: StrictInt = Field(ge=1, le=96)
-    track_total_hits: StrictBool | StrictInt
+    track_total_hits: StrictInt = Field(ge=0, le=10_000)
     query: dict[str, JsonValue] = Field(min_length=1)
     sort: list[JsonValue] | None = None
 
@@ -207,7 +207,7 @@ class AgenticRequestBody(StrictModel):
 
 
 class TrainingExample(StrictModel):
-    objective_version: Literal["opensearch_agentic_query_planner_v1"] = "opensearch_agentic_query_planner_v1"
+    objective_version: Literal["opensearch_agentic_query_planner_v3"] = "opensearch_agentic_query_planner_v3"
     example_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]*$")
     slice: DatasetSlice
     input: AgenticPlannerInput

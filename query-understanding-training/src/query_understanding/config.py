@@ -27,7 +27,7 @@ class DataSettings(ConfigModel):
 
 
 class ObjectiveSettings(ConfigModel):
-    name: Literal["opensearch_agentic_query_planner_v1"]
+    name: Literal["opensearch_agentic_query_planner_v3"]
     system_prompt_file: Path
     user_prompt_file: Path
 

@@ -111,7 +111,9 @@ OpenSearch index:
 
 ## Query Understanding
 
-The primary path sends an OpenSearch `agentic` query through `secondhand-agentic-search`. Its flow agent uses the native `QueryPlanningTool`, the index mapping, an explicit query-field allowlist, and the exact system/user prompt assets used during fine-tuning. The service includes mandatory availability, price, selected facets, exact result size, total-hit cap, and sort intent in the natural-language planner input. The pipeline's `agentic_context` response processor returns the generated DSL for validation, UBI, and debugging.
+The primary path sends an OpenSearch `agentic` query through `secondhand-agentic-search`. Its flow agent uses the native `QueryPlanningTool`, the index mapping, an explicit query-field allowlist, and the exact system/user prompt assets used during fine-tuning. Deterministic understanding first merges safe category/material inference and the parsed price ceiling with explicit UI facets, and derives newest/lowest-price/price-drop intent when the UI remains on Recommended. The browser supplies only an active `personaId`; the API resolves the authoritative allowlisted profile and excludes names, demographics, and images. The service then includes the filters, exact result size, total-hit cap, sort mode, canonical `base_text_query`, deterministic `text_operator`, and bounded shopping-relevant persona context in a compact immutable contract inside the planner input. The pipeline's `agentic_context` response processor returns the generated DSL for validation, UBI, and debugging.
+
+The v3 planner keeps the complete base query as the only required text clause. Profiled personas add exactly one optional `multi_match` scoring clause with a fixed `0.35` boost before the recommended quality/freshness/seller features; Anonymous adds nothing. Explicit sort modes keep the persona signal only as a score tie-break. Runtime validation rejects a changed expansion, boost, placement, hard constraint, base query, or ranking recipe, and both lexical and local fallbacks apply the same optional persona signal.
 
 An end-to-end capture against OpenSearch 3.7 verified the native training input shape: the tool supplies the mapping source with its `_doc` wrapper and serializes both mapping and query fields as JSON string literals before prompt substitution. The offline objective reproduces that representation rather than training on a cleaner but serving-inaccurate prompt.
 
@@ -157,6 +159,7 @@ The deterministic lexical retry remains intentionally lightweight:
    - brand match when brand intent is detected
    - residual tokens with `operator: and`
 3. Apply scoring boosts:
+   - one bounded persona expansion for a profiled shopper
    - quality, freshness, and seller rank features
    - brand/title phrase matches
    - broad multi-field lexical query match
@@ -212,7 +215,7 @@ Target: 200 ms end to end.
 
 Current latency strategy:
 
-- Run native agentic planning with a 3-second request timeout while its quality and latency are evaluated.
+- Run local native agentic planning with a 15-second request timeout while its quality and latency are evaluated.
 - Retry against OpenSearch with in-process deterministic query understanding when agentic planning fails.
 - Keep Tier-2 rewriting behind a strict 20 ms timeout.
 - Use OpenSearch filters and rank features rather than heavy online computation.
@@ -228,7 +231,7 @@ Production latency budget should be explicit:
 | --- | ---: |
 | Frontend request overhead | 10-25 ms |
 | Search API request shaping | 5-15 ms |
-| Native model-backed agentic planning | Measure separately; 3 s hard timeout in the prototype |
+| Native model-backed agentic planning | Measure separately; 15 s local timeout in the prototype |
 | Tier-2 rewrite call | 0-20 ms hard cap |
 | OpenSearch retrieval | 60-120 ms |
 | Lightweight reranking / result shaping | 10-25 ms |

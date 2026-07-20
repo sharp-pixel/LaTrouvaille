@@ -71,7 +71,7 @@
           "type": "array"
         },
         "query_text": {
-          "maxLength": 8000,
+          "maxLength": 1000,
           "minLength": 1,
           "title": "Query Text",
           "type": "string"
@@ -202,8 +202,8 @@
       "$ref": "#/$defs/AgenticPlannerInput"
     },
     "objective_version": {
-      "const": "opensearch_agentic_query_planner_v1",
-      "default": "opensearch_agentic_query_planner_v1",
+      "const": "opensearch_agentic_query_planner_v2",
+      "default": "opensearch_agentic_query_planner_v2",
       "title": "Objective Version",
       "type": "string"
     },

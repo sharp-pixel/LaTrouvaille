@@ -20,6 +20,7 @@ const GENERIC_TERMS = new Set([
   "max",
   "new",
   "of",
+  "or",
   "pre",
   "preloved",
   "resale",
@@ -29,7 +30,15 @@ const GENERIC_TERMS = new Set([
   "under",
   "up",
   "used",
+  "with",
 ]);
+
+const PRICE_LIMIT_PREFIX_SOURCE = String.raw`(?:under|below|less\s+than|up\s+to|max(?:imum)?(?:\s+of)?)`;
+const MONEY_AMOUNT_SOURCE = String.raw`(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d{1,3}(?:\s+\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)`;
+const LOWEST_PRICE_CONTROL_SOURCE = String.raw`\b(?:lowest\s+prices?|cheapest|price\s+low\s+to\s+high)\b`;
+const NEWEST_CONTROL_SOURCE = String.raw`\b(?:newest|latest|most\s+recent|recently\s+listed|new)\b`;
+const PRICE_DROP_CONTROL_SOURCE = String.raw`\b(?:price\s+(?:drops?|reductions?|discounts?)|(?:biggest|largest|highest)\s+(?:price\s+)?(?:drops?|reductions?|discounts?)|with\s+(?:the\s+)?(?:(?:biggest|largest|highest)\s+)?(?:price\s+)?(?:drops?|reductions?|discounts?)|discounted\s+most)\b`;
+const BROWSE_GENERIC_SOURCE = String.raw`\b(?:all|any|anything|everything|available|designer|luxury|pre[-\s]?(?:loved|owned)|used|fresh|resale|second[-\s]?hand|for\s+sale|sale|items?|products?|listings?|catalog(?:ue)?)\b`;
 
 const CATEGORY_TERMS = [
   { category: "Watches", terms: ["watch", "watches", "cadre", "feline", "pivot", "evermark"] },
@@ -84,6 +93,45 @@ export function normalizeText(value) {
     .trim();
 }
 
+export function stripQueryControls(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\s*(?:(?:please|kindly)\s+)?(?:(?:can|could|would)\s+you\s+)?/i, "")
+    .replace(/^\s*(?:can|could|would)\s+i\s+(?:see|find|browse|search(?:\s+for)?)\s+/i, "")
+    .replace(
+      /^\s*(?:(?:please|kindly)\s+)?(?:show(?:\s+me)?|find(?:\s+me)?|search(?:\s+for)?|look\s+for|browse|give\s+me)\s+/i,
+      "",
+    )
+    .replace(/^\s*i(?:\s+am|['’]m)\s+looking\s+for\s+/i, "")
+    .replace(/^\s*i\s+(?:would\s+like|want)(?:\s+to\s+(?:see|find))?\s+/i, "")
+    .replace(/^\s*i\s+need\s+/i, "")
+    .replace(/\s+(?:please|kindly)\s*$/i, "")
+    .replace(new RegExp(BROWSE_GENERIC_SOURCE, "gi"), " ")
+    .replace(
+      new RegExp(
+        `\\b${PRICE_LIMIT_PREFIX_SOURCE}\\s*(?:(?:eur|euro|euros|€)\\s*)?${MONEY_AMOUNT_SOURCE}(?:\\s*k)?(?:\\s*(?:eur|euro|euros|€))?(?=\\s|$|[.,;!?])`,
+        "gi",
+      ),
+      " ",
+    )
+    .replace(
+      new RegExp(
+        `(?:<=|<)\\s*(?:(?:eur|euro|euros|€)\\s*)?${MONEY_AMOUNT_SOURCE}(?:\\s*k)?(?:\\s*(?:eur|euro|euros|€))?(?=\\s|$|[.,;!?])`,
+        "gi",
+      ),
+      " ",
+    )
+    .replace(new RegExp(LOWEST_PRICE_CONTROL_SOURCE, "gi"), " ")
+    .replace(new RegExp(NEWEST_CONTROL_SOURCE, "gi"), " ")
+    .replace(new RegExp(PRICE_DROP_CONTROL_SOURCE, "gi"), " ")
+    .replace(/\s+/g, " ")
+    .replace(/^(?:and|or|with|the)\b\s*/i, "")
+    .replace(/\s*\b(?:and|or|with|the)$/i, "")
+    .replace(/^[,;:\s]+|[,;:\s]+$/g, "")
+    .trim();
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -98,25 +146,71 @@ function titleCase(value) {
 }
 
 function parseMoney(value, suffix = "") {
-  const normalized = value.replace(/\s/g, "").replace(",", ".");
+  const compact = value.replace(/\s/g, "");
+  let normalized = compact;
+  if (/^\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(compact)) {
+    normalized = compact.replace(/,/g, "");
+  } else if (/^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(compact)) {
+    normalized = compact.replace(/\./g, "").replace(",", ".");
+  } else {
+    normalized = compact.replace(",", ".");
+  }
   const amount = Number(normalized);
   if (!Number.isFinite(amount)) return null;
-  return Math.round(amount * (suffix.toLowerCase() === "k" ? 1000 : 1));
+  return Math.floor(amount * (suffix.toLowerCase() === "k" ? 1000 : 1));
 }
 
 export function parseMaxPrice(query) {
   const q = String(query ?? "").toLowerCase();
   const phraseMatch = q.match(
-    /\b(?:under|below|max|less than|up to)\s*(?:eur|euro|euros|€)?\s*([0-9]+(?:[.,][0-9]+)?)(\s*k)?\b/,
+    new RegExp(
+      `\\b${PRICE_LIMIT_PREFIX_SOURCE}\\s*(?:eur|euro|euros|€)?\\s*(${MONEY_AMOUNT_SOURCE})(\\s*k)?\\b`,
+      "i",
+    ),
   );
-  const symbolMatch = q.match(/(?:<|<=)\s*(?:eur|euro|euros|€)?\s*([0-9]+(?:[.,][0-9]+)?)(\s*k)?\b/);
+  const symbolMatch = q.match(
+    new RegExp(`(?:<=|<)\\s*(?:eur|euro|euros|€)?\\s*(${MONEY_AMOUNT_SOURCE})(\\s*k)?\\b`, "i"),
+  );
   const match = phraseMatch || symbolMatch;
   if (!match) return null;
-  return parseMoney(match[1], match[2]?.trim());
+  const parsed = parseMoney(match[1], match[2]?.trim());
+  return parsed === null ? null : Math.max(1, parsed);
+}
+
+export function deriveEffectiveSort(query, requestedSort = "Recommended") {
+  if (["Lowest price", "Newest", "Price drop"].includes(requestedSort)) return requestedSort;
+  const text = String(query || "");
+  if (new RegExp(PRICE_DROP_CONTROL_SOURCE, "i").test(text)) return "Price drop";
+  if (new RegExp(LOWEST_PRICE_CONTROL_SOURCE, "i").test(text)) return "Lowest price";
+  if (new RegExp(NEWEST_CONTROL_SOURCE, "i").test(text)) return "Newest";
+  return "Recommended";
+}
+
+function findMatchedMaterials(normalizedQuery) {
+  const matches = MATERIAL_TERMS.flatMap(({ material, terms }) =>
+    terms.flatMap((term) => {
+      const normalizedTerm = normalizeText(term);
+      return [...normalizedQuery.matchAll(new RegExp(`\\b${escapeRegExp(normalizedTerm)}\\b`, "g"))].map(
+        (match) => ({ material, start: match.index, end: match.index + match[0].length }),
+      );
+    }),
+  );
+  const unshadowed = matches.filter(
+    (candidate) =>
+      !matches.some(
+        (other) =>
+          other.material !== candidate.material &&
+          other.start <= candidate.start &&
+          other.end >= candidate.end &&
+          other.end - other.start > candidate.end - candidate.start,
+      ),
+  );
+  const matchedMaterials = new Set(unshadowed.map(({ material }) => material));
+  return MATERIAL_TERMS.filter(({ material }) => matchedMaterials.has(material)).map(({ material }) => material);
 }
 
 export function createQueryUnderstanding(query, catalog) {
-  const normalizedQuery = normalizeText(query);
+  const normalizedQuery = normalizeText(stripQueryControls(query));
   const phraseIntents = PHRASE_INTENTS.map((intent) => ({
     ...intent,
     matchedPhrase: intent.phrases.find((phrase) => new RegExp(`\\b${escapeRegExp(normalizeText(phrase))}\\b`).test(normalizedQuery)),
@@ -143,9 +237,7 @@ export function createQueryUnderstanding(query, catalog) {
       ).map(({ category }) => category),
     ]),
   ];
-  const materials = MATERIAL_TERMS.filter(({ terms }) =>
-    terms.some((term) => new RegExp(`\\b${escapeRegExp(normalizeText(term))}\\b`).test(normalizedQuery)),
-  ).map(({ material }) => material);
+  const materials = findMatchedMaterials(normalizedQuery);
 
   const priceMax = parseMaxPrice(query);
   const brandWords = new Set((brand?.normalized || "").split(" ").filter(Boolean));
@@ -261,22 +353,56 @@ function scoreProduct(product, understanding, selectedFilters) {
   return score;
 }
 
-export function localSearchProducts(items, { query, filters, maxPrice, sort }) {
+function scorePersonaAffinity(product, persona) {
+  const expansion = persona?.searchProfile?.queryExpansion;
+  if (!expansion) return 0;
+
+  const terms = [
+    ...new Set(
+      normalizeText(String(expansion).slice(0, 120))
+        .split(" ")
+        .filter((term) => term.length > 2),
+    ),
+  ].slice(0, 16);
+  const title = normalizeText(product.title);
+  const text = productText(product);
+  const affinity = terms.reduce((score, term) => {
+    if (title.includes(term)) return score + 5;
+    if (text.includes(term)) return score + 3;
+    return score;
+  }, 0);
+
+  // Persona terms are soft signals: they can break close relevance ties but never
+  // become filters or overwhelm the shopper's explicit query.
+  return Math.min(affinity, 30);
+}
+
+export function localSearchProducts(items, { query, filters, maxPrice, sort, persona }) {
   const understanding = createQueryUnderstanding(query, items);
-  const priceLimit = Number(maxPrice) || 20000;
+  const requestedPriceLimit = Number(maxPrice) || 20000;
+  const priceLimit = Math.min(requestedPriceLimit, understanding.priceMax ?? requestedPriceLimit);
+  const effectiveSort = deriveEffectiveSort(query, sort);
   const filtered = items
     .filter((item) => matchesFacetFilters(item, filters))
     .filter((item) => item.price <= priceLimit)
     .filter((item) => matchesQuery(item, understanding))
     .map((product) => ({
       ...product,
-      computedScore: scoreProduct(product, understanding, filters),
+      computedScore: scoreProduct(product, understanding, filters) + scorePersonaAffinity(product, persona),
     }));
 
-  if (sort === "Lowest price") return filtered.sort((a, b) => a.price - b.price);
-  if (sort === "Newest") return filtered.sort((a, b) => new Date(b.listed_at) - new Date(a.listed_at));
-  if (sort === "Price drop") {
-    return filtered.sort((a, b) => Number(Boolean(b.oldPrice)) - Number(Boolean(a.oldPrice)) || b.computedScore - a.computedScore);
+  if (effectiveSort === "Lowest price") {
+    return filtered.sort((a, b) => a.price - b.price || b.computedScore - a.computedScore);
+  }
+  if (effectiveSort === "Newest") {
+    return filtered.sort(
+      (a, b) => new Date(b.listed_at) - new Date(a.listed_at) || b.computedScore - a.computedScore,
+    );
+  }
+  if (effectiveSort === "Price drop") {
+    return filtered.sort(
+      (a, b) => (Number(b.oldPrice) || Number.NEGATIVE_INFINITY) - (Number(a.oldPrice) || Number.NEGATIVE_INFINITY) || b.computedScore - a.computedScore,
+    );
   }
   return filtered.sort((a, b) => b.computedScore - a.computedScore);
 }

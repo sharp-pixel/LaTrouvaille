@@ -64,6 +64,16 @@ const formatResultCount = (count, relation) => {
   return relation === "gte" ? `${formatted}+` : formatted;
 };
 
+const formatDslQuery = (dslQuery) => {
+  if (!dslQuery) return "No OpenSearch DSL was executed; these results came from the local fallback.";
+  try {
+    const parsed = typeof dslQuery === "string" ? JSON.parse(dslQuery) : dslQuery;
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return String(dslQuery);
+  }
+};
+
 const getInitialPersona = () => {
   try {
     return getPersonaById(localStorage.getItem(PERSONA_STORAGE_KEY));
@@ -896,12 +906,29 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
         </small>
       </div>
       <ol>
-        {recent.map((event) => (
-          <li key={`${event.timestamp}-${event.action_name || event.user_query}`}>
-            <span>{event.action_name || "query"}</span>
-            <b>{event.event_attributes?.object?.object_id || event.user_query || event.message}</b>
-          </li>
-        ))}
+        {recent.map((event) => {
+          const isQuery = event.type === "query";
+          const dslQuery =
+            event.query_attributes?.query_plan?.dslQuery ??
+            event.query_attributes?.query_plan?.agentic?.dslQuery;
+          const tooltipId = isQuery ? `ubi-dsl-${event.query_id}` : undefined;
+          return (
+            <li key={`${event.timestamp}-${event.action_name || event.user_query}`}>
+              <span>{event.action_name || "query"}</span>
+              {isQuery ? (
+                <div className="ubi-query-hover" tabIndex={0} aria-describedby={tooltipId}>
+                  <b>{event.user_query || event.message}</b>
+                  <div className="ubi-dsl-popup" id={tooltipId} role="tooltip">
+                    <span>Actual OpenSearch DSL</span>
+                    <pre>{formatDslQuery(dslQuery)}</pre>
+                  </div>
+                </div>
+              ) : (
+                <b>{event.event_attributes?.object?.object_id || event.message}</b>
+              )}
+            </li>
+          );
+        })}
       </ol>
     </section>
   );

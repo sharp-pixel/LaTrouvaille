@@ -773,6 +773,7 @@ img {
 }
 
 .ubi-panel li {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -788,6 +789,66 @@ img {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ubi-query-hover {
+  min-width: 0;
+  cursor: help;
+  outline: none;
+}
+
+.ubi-query-hover > b {
+  display: block;
+  text-decoration: underline dotted #9c8f7d;
+  text-underline-offset: 3px;
+}
+
+.ubi-query-hover:focus-visible > b {
+  border-radius: 2px;
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.ubi-dsl-popup {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 9px);
+  left: -1px;
+  display: none;
+  width: min(560px, calc(100vw - 48px));
+  padding: 14px;
+  border: 1px solid #cfc6b8;
+  background: #211d18;
+  color: #fffaf1;
+  box-shadow: 0 16px 40px rgba(30, 26, 20, 0.24);
+}
+
+.ubi-dsl-popup::before {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 9px;
+  content: "";
+}
+
+.ubi-query-hover:hover .ubi-dsl-popup,
+.ubi-query-hover:focus .ubi-dsl-popup,
+.ubi-query-hover:focus-within .ubi-dsl-popup {
+  display: block;
+}
+
+.ubi-panel .ubi-dsl-popup > span {
+  color: #d8cdbc;
+}
+
+.ubi-dsl-popup pre {
+  max-height: 360px;
+  margin: 10px 0 0;
+  overflow: auto;
+  color: inherit;
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre;
 }
 
 .results-layout {

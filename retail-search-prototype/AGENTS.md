@@ -12,7 +12,7 @@ Catalog content belongs to a fictional luxury universe. Do not introduce real br
 
 Cart listings are unique: the cart has no quantity controls, cannot contain the same listing twice, and starts empty on each fresh app load.
 
-The customer-facing UBI summary is scoped to the active query ID. Show the current query and only interactions linked to it; do not expose internal search-enhancement implementation details such as Querqy or Agentic Search status.
+The customer-facing UBI summary is scoped to the active query ID. Show the current query and only interactions linked to it; do not expose internal search-enhancement implementation details such as Querqy or Agentic Search status. Hovering or keyboard-focusing the current UBI query must reveal the actual OpenSearch DSL in a readable popup.
 
 Customer natural-language queries use the native OpenSearch Agentic Search pipeline configured by `scripts/configure-agentic-search.mjs`. Prefer the served fine-tuned model alias and fall back to the pinned base model alias during provisioning. Keep the deterministic lexical OpenSearch request as the runtime fail-open path, and preserve local catalogue fallback for a full OpenSearch outage.
 

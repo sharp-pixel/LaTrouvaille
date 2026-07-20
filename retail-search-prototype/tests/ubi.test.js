@@ -101,3 +101,15 @@ test("UBI canonicalizes a client-local fallback plan without persisting baseRewr
   assert.equal("baseRewrite" in compact, false);
   assert.equal("personalizedRewrite" in compact, false);
 });
+
+test("UBI keeps the executed OpenSearch DSL for query inspection", () => {
+  const dslQuery = {
+    size: 24,
+    track_total_hits: 10000,
+    query: { term: { availability: "active" } },
+  };
+
+  const compact = compactQueryPlan({ rewritten: "Bags", dslQuery }, "Bags");
+
+  assert.deepEqual(compact, { dslQuery });
+});

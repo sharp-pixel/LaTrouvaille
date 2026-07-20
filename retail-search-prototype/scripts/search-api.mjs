@@ -403,10 +403,10 @@ async function search(payload) {
         queryPlan: {
           ...understanding,
           ...personalization("applied"),
+          dslQuery: agenticDslQuery,
           agentic: {
             status: "applied",
             pipeline: agenticPipeline,
-            dslQuery: agenticDslQuery,
           },
         },
         enhancements: {
@@ -425,9 +425,10 @@ async function search(payload) {
   }
 
   const tier2Rewrite = await fetchTier2Rewrite(query, understanding);
+  let lexicalDslQuery;
 
   try {
-    const body = {
+    lexicalDslQuery = {
       size,
       track_total_hits: trackTotalHits,
       query: buildQuery({
@@ -441,9 +442,9 @@ async function search(payload) {
       _source: sourceFields,
     };
     const sortClause = buildSort(sort);
-    if (sortClause) body.sort = sortClause;
+    if (sortClause) lexicalDslQuery.sort = sortClause;
 
-    const result = unwrap(await client.search({ index, body }));
+    const result = unwrap(await client.search({ index, body: lexicalDslQuery }));
     return {
       index,
       source: "opensearch",
@@ -454,12 +455,12 @@ async function search(payload) {
       queryPlan: {
         ...understanding,
         ...personalization(agenticError ? "fallback" : "applied"),
+        dslQuery: lexicalDslQuery,
         tier2: tier2Rewrite,
         agentic: {
           status: agenticError ? "fallback" : agenticMode === "active" ? "skipped" : "disabled",
           pipeline: agenticPipeline,
           error: agenticError?.message || null,
-          dslQuery: agenticDslQuery,
         },
       },
       enhancements: {
@@ -492,12 +493,12 @@ async function search(payload) {
       queryPlan: {
         ...understanding,
         ...personalization("fallback"),
+        dslQuery: lexicalDslQuery,
         tier2: tier2Rewrite,
         agentic: {
           status: agenticError ? "failed" : agenticMode === "active" ? "skipped" : "disabled",
           pipeline: agenticPipeline,
           error: agenticError?.message || null,
-          dslQuery: agenticDslQuery,
         },
       },
       enhancements: {

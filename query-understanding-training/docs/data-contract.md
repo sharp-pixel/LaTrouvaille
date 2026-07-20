@@ -1,88 +1,110 @@
-# Data contract
+# Native Agentic Search data contract
 
 ## Canonical source row
 
-Each JSONL line has four fields:
+Each JSONL row describes the exact input seen by OpenSearch's `QueryPlanningTool`, offline expectations, and the full search body the model must generate:
 
 ```json
 {
-  "example_id": "dress-watch-quiet-intermediate",
-  "slice": "ambiguous_persona",
-  "input": {},
-  "output": {}
+  "objective_version": "opensearch_agentic_query_planner_v1",
+  "example_id": "formal-watch",
+  "slice": "intent_disambiguation",
+  "input": {
+    "query_text": "Shopper request: formal watch.\nRequired filters: availability must equal active.",
+    "index_name": "secondhand_items_current",
+    "index_mapping": {
+      "_doc": {
+        "dynamic": "false",
+        "properties": {
+          "title": {"type": "text"},
+          "brand": {"type": "text"},
+          "canonical_text": {"type": "text"}
+        }
+      }
+    },
+    "query_fields": ["title", "brand", "canonical_text"]
+  },
+  "expectations": {
+    "required_filters": [{"field": "availability", "op": "term", "value": "active"}],
+    "result_size": 24,
+    "track_total_hits": 10000,
+    "sort_mode": "recommended"
+  },
+  "target_body": {
+    "size": 24,
+    "track_total_hits": 10000,
+    "query": {"bool": {}}
+  }
 }
 ```
 
-The loader converts it into a conversational prompt/completion sample:
+The loader renders the same system and user prompt templates registered in OpenSearch. Only the canonical JSON serialization of `target_body` is labeled as the assistant completion.
 
-1. A fixed system message defines the JSON-only compiler and safety constraints.
-2. The user message is canonical, key-sorted JSON for `input`.
-3. The assistant completion is canonical, key-sorted JSON for `output`.
+## Native input fields
 
-Only assistant completion tokens receive labels. Examples longer than `sequence_length` fail preprocessing; they are never truncated because partial JSON is a harmful target.
+- `query_text`: the complete natural-language question passed in the `agentic` clause, including service-owned filters, result limit, and sort intent.
+- `index_name`: used for offline allowlist checks; it is not part of the completion.
+- `index_mapping`: the mapping-source shape emitted by the deployed OpenSearch version. OpenSearch 3.7 wraps it in `_doc`, so the checked-in fixtures do too.
+- `query_fields`: the same field allowlist supplied in the native `agentic` query.
+- `QueryPlanningTool` serializes both the mapping and `query_fields` as JSON string literals before connector substitution. The offline renderer mirrors that extra serialization layer exactly.
+- The custom prompt intentionally omits volatile sample-document and clock fields so the fine-tune sees the same stable inputs at training and serving time.
 
-## Input fields
+Persona, expertise, confidence, and mental-model labels do not enter this serving objective. The prototype records persona as evaluation context and does not silently personalize ranking.
 
-- `raw_query`
-- `user_context.persona_summary`
-- `user_context.category_expertise`
-- optional `user_context.budget`
-- `allowed_schema.indexes`
-- `allowed_schema.categories`
-- `allowed_schema.fields`
-- `allowed_schema.search_pipelines`
-- optional `current_filters`
-- optional `category_ontology`
-- `output_schema`, fixed to `psg_query_compiler_v1`
+## Evaluation expectations
 
-Sensitive personal data should not be copied into `persona_summary`. Store only preference features required for retrieval.
+`expectations` never enters the prompt or completion. It specifies:
 
-## Output fields
+- required exact/range filters that the generated body must retain;
+- the exact result size requested by the service;
+- the exact total-hit setting requested by the service;
+- one of `recommended`, `lowest_price`, `newest`, or `price_drop` for sort validation.
 
-- `schema_version`, fixed to `psg_query_compiler_v1`
-- `raw_query`
-- `category`
-- `query_type`: `lookup`, `comparison`, `recommendation`, `exploratory_search`, or `filter_refinement`
-- `user_expertise`: `novice`, `intermediate`, or `expert`
-- `confidence`
-- `clarification_needed` and `clarification_question`
-- six dense `resolution_weights` that sum to 1
-- eight dense `mental_model_weights`, each between 0 and 1
-- `rewrites.embedding_query`, `keyword_query`, and `negative_query`
-- `constraints.filters` and `constraints.must_not`
-- `opensearch.index`, optional `search_pipeline`, and `body`
+## Target-body rules
 
-The JSON Schema is generated from `QueryCompilerOutput`:
+The target is one complete `SearchSourceBuilder`-compatible JSON object:
+
+- Include `size`, `track_total_hits`, `query`, and a requested `sort`; `track_total_hits` must match the service requirement encoded in `query_text`.
+- Do not include `_source`; `AgenticQueryTranslator` preserves `_source` from the incoming service request.
+- Do not include the index, search pipeline, `agentic` query, metadata envelope, explanations, or Markdown.
+- Use only mapped `query_fields` and policy-allowlisted query types.
+- Use full-text clauses only on mapped text fields, `prefix` only on keyword-like fields, `rank_feature` only on rank-feature fields, and type-compatible, satisfiable ranges.
+- Do not emit `bool.must_not`; this serving objective supports positive retrieval and service-owned filters only.
+- Keep scripts, `script_score`, `query_string`, regexp, and wildcard queries forbidden.
+
+Export the formal row schema with:
 
 ```bash
-uv run --no-editable quft export-schema --output schemas/psg_query_compiler_v1.schema.json
+uv run --no-editable quft export-schema --output schemas/opensearch_agentic_query_planner_v1.schema.json
 ```
 
 ## Dataset slices
 
-The production corpus should converge on the design mix:
+A production corpus should cover at least:
 
-| Slice | Share |
+| Slice | Suggested share |
 | --- | ---: |
-| Clean single-category | 20% |
-| Ambiguous/persona-dependent | 25% |
-| Expertise/resolution contrast pairs | 20% |
-| Cross-category transfer | 10% |
-| OpenSearch DSL hard cases | 15% |
-| Negative/repair/clarification cases | 10% |
+| Clean single-category retrieval | 20% |
+| Intent and phrase disambiguation | 20% |
+| Exact brand/model lookup | 15% |
+| Facets, ranges, and conflicting filters | 15% |
+| All supported sort modes | 10% |
+| Broad and zero-context queries | 5% |
+| Mapping/query-field variation | 10% |
+| Adversarial and fallback cases | 5% |
 
-Split contrast groups by surface query before train/eval partitioning. The same ambiguous query must not leak across splits with only its persona changed.
+Split duplicate surface queries and mapping variants as groups so near-identical requests cannot leak across train/evaluation partitions.
 
 ## Acceptance gates
 
 Before production consideration, evaluate at least:
 
-- JSON and schema validity: 99.5% or better.
-- Policy/DSL compile validity: 99% or better.
-- Real OpenSearch execution rate: 99% or better.
-- Category accuracy: 95% or better.
-- Query-type accuracy: 90% or better.
-- Expertise/retrieval-resolution accuracy: 85% or better on hard cases.
-- Statistically significant lift in NDCG@10, Recall@50, and MRR over prompt-only and rules-only baselines.
+- JSON and request-body validity: 99.5% or better.
+- Policy-valid DSL: 99% or better.
+- Required-filter recall: 99.5% or better.
+- Sort-mode accuracy: 99% or better.
+- Real OpenSearch parse/execution rate: 99% or better.
+- QueryPlanningTool fallback-use rate below the agreed error budget.
+- Statistically significant lift in NDCG@10, Recall@50, and MRR over the base model and deterministic lexical fallback.
 
-The included evaluator covers the structural metrics. Retrieval metrics and execution rate require a judged result set and a running OpenSearch index.
+The included evaluator covers structural validity, exact request match, and required-filter recall. Execution, fallback detection, latency, and retrieval metrics require a running OpenSearch index and judged queries.

@@ -3,6 +3,11 @@ model:
   revision: 06cc81bfd6e45321d8fc8f816576c5b6ac67ec22
   trust_remote_code: false
 
+objective:
+  name: opensearch_agentic_query_planner_v1
+  system_prompt_file: ../src/query_understanding/prompts/opensearch-agentic-query-planner-v1.txt
+  user_prompt_file: ../src/query_understanding/prompts/opensearch-agentic-query-planner-user-v1.txt
+
 data:
   train_file: ../data/train.jsonl
   eval_file: ../data/eval.jsonl
@@ -22,7 +27,7 @@ lora:
   target_modules_regex: '^language_model\.model\.layers\.\d+\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))$'
 
 trainer:
-  output_dir: ../artifacts/qlora-v1
+  output_dir: ../artifacts/qlora-agentic-v1
   sequence_length: 2048
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1

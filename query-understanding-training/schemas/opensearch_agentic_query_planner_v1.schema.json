@@ -1,0 +1,226 @@
+{
+  "$defs": {
+    "AgenticExpectations": {
+      "additionalProperties": false,
+      "properties": {
+        "required_filters": {
+          "items": {
+            "$ref": "#/$defs/Constraint"
+          },
+          "title": "Required Filters",
+          "type": "array"
+        },
+        "result_size": {
+          "maximum": 96,
+          "minimum": 1,
+          "title": "Result Size",
+          "type": "integer"
+        },
+        "sort_mode": {
+          "default": "recommended",
+          "enum": [
+            "recommended",
+            "lowest_price",
+            "newest",
+            "price_drop"
+          ],
+          "title": "Sort Mode",
+          "type": "string"
+        },
+        "track_total_hits": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "default": 10000,
+          "title": "Track Total Hits"
+        }
+      },
+      "required": [
+        "result_size"
+      ],
+      "title": "AgenticExpectations",
+      "type": "object"
+    },
+    "AgenticPlannerInput": {
+      "additionalProperties": false,
+      "properties": {
+        "index_mapping": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Index Mapping",
+          "type": "object"
+        },
+        "index_name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Index Name",
+          "type": "string"
+        },
+        "query_fields": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Query Fields",
+          "type": "array"
+        },
+        "query_text": {
+          "maxLength": 8000,
+          "minLength": 1,
+          "title": "Query Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query_text",
+        "index_name",
+        "index_mapping",
+        "query_fields"
+      ],
+      "title": "AgenticPlannerInput",
+      "type": "object"
+    },
+    "AgenticRequestBody": {
+      "additionalProperties": false,
+      "description": "Executable body returned by QueryPlanningTool, excluding service-owned `_source`.",
+      "properties": {
+        "query": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "minProperties": 1,
+          "title": "Query",
+          "type": "object"
+        },
+        "size": {
+          "maximum": 96,
+          "minimum": 1,
+          "title": "Size",
+          "type": "integer"
+        },
+        "sort": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sort"
+        },
+        "track_total_hits": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Track Total Hits"
+        }
+      },
+      "required": [
+        "size",
+        "track_total_hits",
+        "query"
+      ],
+      "title": "AgenticRequestBody",
+      "type": "object"
+    },
+    "Constraint": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "term",
+            "terms",
+            "eq",
+            "gt",
+            "gte",
+            "lt",
+            "lte"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "field",
+        "op",
+        "value"
+      ],
+      "title": "Constraint",
+      "type": "object"
+    },
+    "DatasetSlice": {
+      "enum": [
+        "clean_single_category",
+        "intent_disambiguation",
+        "exact_lookup",
+        "filter_and_sort",
+        "broad_query",
+        "mapping_variation",
+        "adversarial_fallback"
+      ],
+      "title": "DatasetSlice",
+      "type": "string"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "example_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "title": "Example Id",
+      "type": "string"
+    },
+    "expectations": {
+      "$ref": "#/$defs/AgenticExpectations"
+    },
+    "input": {
+      "$ref": "#/$defs/AgenticPlannerInput"
+    },
+    "objective_version": {
+      "const": "opensearch_agentic_query_planner_v1",
+      "default": "opensearch_agentic_query_planner_v1",
+      "title": "Objective Version",
+      "type": "string"
+    },
+    "slice": {
+      "$ref": "#/$defs/DatasetSlice"
+    },
+    "target_body": {
+      "$ref": "#/$defs/AgenticRequestBody"
+    }
+  },
+  "required": [
+    "example_id",
+    "slice",
+    "input",
+    "expectations",
+    "target_body"
+  ],
+  "title": "TrainingExample",
+  "type": "object"
+}

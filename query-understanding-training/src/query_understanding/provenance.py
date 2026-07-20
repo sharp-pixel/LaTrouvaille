@@ -35,6 +35,7 @@ def build_run_manifest(config: TrainingConfig, project_root: Path) -> dict[str, 
     lockfile = project_root / "uv.lock"
     return {
         "created_at": datetime.now(UTC).isoformat(),
+        "objective_version": config.objective.name,
         "schema_version": SCHEMA_VERSION,
         "model": {
             "name_or_path": config.model.name_or_path,
@@ -45,6 +46,14 @@ def build_run_manifest(config: TrainingConfig, project_root: Path) -> dict[str, 
             "eval": {"path": str(config.data.eval_file), "sha256": sha256_file(config.data.eval_file)},
         },
         "policy": {"path": str(config.data.policy_file), "sha256": sha256_file(config.data.policy_file)},
+        "system_prompt": {
+            "path": str(config.objective.system_prompt_file),
+            "sha256": sha256_file(config.objective.system_prompt_file),
+        },
+        "user_prompt": {
+            "path": str(config.objective.user_prompt_file),
+            "sha256": sha256_file(config.objective.user_prompt_file),
+        },
         "uv_lock_sha256": sha256_file(lockfile) if lockfile.exists() else None,
         "git_commit": _git_commit(project_root),
         "packages": _package_versions(),

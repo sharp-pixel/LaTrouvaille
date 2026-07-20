@@ -10,14 +10,16 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from query_understanding.policy import CompilerPolicy, PolicyViolation, validate_compiler_output
+from query_understanding.agentic_objective import (
+    build_query_planner_user_prompt,
+    load_system_prompt,
+    load_user_prompt_template,
+)
+from query_understanding.policy import CompilerPolicy, PolicyViolation, validate_agentic_request_body
 from query_understanding.schemas import TrainingExample
 
-SYSTEM_PROMPT = (
-    "You are PSG Query Compiler v1. Produce strict JSON only. Never invent fields. "
-    "Use only the allowed indexes, fields, query types, and result limits. "
-    "Do not emit scripts, query_string, wildcard, or trailing prose."
-)
+SYSTEM_PROMPT = load_system_prompt()
+USER_PROMPT_TEMPLATE = load_user_prompt_template()
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,12 @@ def validate_dataset(path: Path, policy: CompilerPolicy) -> ValidationReport:
                 example = TrainingExample.model_validate(raw)
                 if example.example_id in seen_ids:
                     raise ValueError(f"duplicate example_id: {example.example_id}")
-                validate_compiler_output(example.input, example.output, policy)
+                validate_agentic_request_body(
+                    example.input,
+                    example.target_body.to_opensearch(),
+                    policy,
+                    example.expectations,
+                )
             except (json.JSONDecodeError, ValidationError, PolicyViolation, ValueError) as error:
                 issues.append(DatasetIssue(line_number, example_id, str(error)))
                 continue
@@ -95,17 +102,28 @@ def read_examples(path: Path, policy: CompilerPolicy) -> list[TrainingExample]:
     return examples
 
 
-def to_prompt_completion(example: TrainingExample) -> dict[str, object]:
+def to_prompt_completion(
+    example: TrainingExample,
+    system_prompt: str = SYSTEM_PROMPT,
+    user_prompt_template: str = USER_PROMPT_TEMPLATE,
+) -> dict[str, object]:
     return {
         "prompt": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": canonical_json(example.input.model_dump(mode="json"))},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": build_query_planner_user_prompt(example.input, user_prompt_template)},
         ],
         "completion": [
-            {"role": "assistant", "content": canonical_json(example.output.model_dump(mode="json"))},
+            {"role": "assistant", "content": canonical_json(example.target_body.to_opensearch())},
         ],
     }
 
 
-def training_rows(path: Path, policy: CompilerPolicy) -> list[dict[str, object]]:
-    return [to_prompt_completion(example) for example in read_examples(path, policy)]
+def training_rows(
+    path: Path,
+    policy: CompilerPolicy,
+    system_prompt: str = SYSTEM_PROMPT,
+    user_prompt_template: str = USER_PROMPT_TEMPLATE,
+) -> list[dict[str, object]]:
+    return [
+        to_prompt_completion(example, system_prompt, user_prompt_template) for example in read_examples(path, policy)
+    ]

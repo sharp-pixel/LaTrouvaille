@@ -1,4 +1,4 @@
-"""Persona-aware query-understanding fine-tuning toolkit."""
+"""Native OpenSearch Agentic Search query-planning fine-tuning toolkit."""
 
 from query_understanding.schemas import SCHEMA_VERSION
 

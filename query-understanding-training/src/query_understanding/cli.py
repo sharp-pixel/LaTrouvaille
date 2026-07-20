@@ -12,7 +12,7 @@ from query_understanding.config import load_training_config
 from query_understanding.dataset import ValidationReport, validate_dataset
 from query_understanding.evaluation import evaluate_predictions
 from query_understanding.policy import load_policy
-from query_understanding.schemas import QueryCompilerOutput
+from query_understanding.schemas import TrainingExample
 from query_understanding.training import environment_report, require_supported_python, run_training
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
@@ -48,8 +48,8 @@ def validate_data(
 def export_schema(
     output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
 ) -> None:
-    """Export the versioned model-output JSON Schema."""
-    rendered = json.dumps(QueryCompilerOutput.model_json_schema(), indent=2, sort_keys=True) + "\n"
+    """Export the native Agentic Search training-row JSON Schema."""
+    rendered = json.dumps(TrainingExample.model_json_schema(), indent=2, sort_keys=True) + "\n"
     if output is None:
         typer.echo(rendered, nl=False)
         return

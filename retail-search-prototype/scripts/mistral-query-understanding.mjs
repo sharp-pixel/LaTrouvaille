@@ -1,3 +1,4 @@
+// Legacy standalone compiler adapter. Native Agentic Search does not call this service.
 import http from "node:http";
 
 const port = Number(process.env.MISTRAL_QUERY_UNDERSTANDING_PORT || 8792);

@@ -2,7 +2,7 @@
 
 ## Current prototype
 
-The existing search app performs Tier-1 query understanding in JavaScript and compiles a lexical OpenSearch request against `secondhand_items_current`. The OpenSearch mapping does not yet contain the design document’s `concept_scores.*`, identity hierarchy, or k-NN vector fields.
+The search app now sends natural-language requests through OpenSearch's native Agentic Search pipeline against `secondhand_items_current`. A flow agent and `QueryPlanningTool` use this project's served fine-tuned adapter when its configured model alias is available, or the pinned base model otherwise. The earlier JavaScript compiler remains the deterministic lexical OpenSearch fallback. The mapping does not yet contain the design document’s `concept_scores.*`, identity hierarchy, or k-NN vector fields.
 
 For that reason, this project ships two policies:
 
@@ -13,23 +13,26 @@ For that reason, this project ships two policies:
 
 1. Train and evaluate adapters offline.
 2. Replay held-out and UBI-derived queries without affecting shopper responses.
-3. Validate every output, recompile/sanitize the DSL, and compare it with the rules-only baseline.
+3. Inspect the native pipeline's returned `dsl_query`, validate it offline, and compare it with the deterministic lexical baseline.
 4. Add shadow traffic and measure query-understanding p50/p95 separately from OpenSearch latency.
 5. Introduce a fail-open service boundary only after quality and latency gates pass.
 
-The prototype now includes that boundary at `retail-search-prototype/scripts/mistral-query-understanding.mjs`. It uses an OpenAI-compatible Mistral serving endpoint and accepts the served model alias through `MISTRAL_MODEL`, which makes the same adapter work for the vanilla checkpoint or a server-loaded LoRA adapter. `MISTRAL_QUERY_UNDERSTANDING_MODE=shadow` records output without changing retrieval; `active` applies only the validated rewrite and allowlisted catalog constraints. It does not execute `output.opensearch.body`: the Node API retains ownership of request compilation.
+The prototype provisions that boundary through `retail-search-prototype/scripts/configure-agentic-search.mjs`. It registers an OpenAI-compatible remote model in OpenSearch, a native flow agent with `QueryPlanningTool`, and the agentic search pipeline. The configuration script discovers served aliases and prefers `AGENTIC_FINE_TUNED_MODEL`, falling back to `AGENTIC_BASE_MODEL`. Training and agent registration load the exact same packaged system and user prompt assets. The adapter emits one complete search body containing `size`, `track_total_hits`, `query`, and any requested `sort`.
 
-An 8B local model will not fit the prototype’s current 5–15 ms Tier-1 parsing budget or the 20 ms Tier-2 rewrite timeout. Do not replace the in-process JavaScript parser with a blocking network call by default. Likely production options are asynchronous enrichment, aggressive caching, a smaller distilled model, or a separately budgeted service with a deterministic fallback.
+`AgenticQueryTranslator` replaces the generated search source and preserves only incoming `_source` and `ext`. Consequently, the Node API sends sort intent inside `query_text` rather than attaching an outer sort, and the fine-tuning target omits `_source` while generating all other serving options.
+
+An 8B local model will not fit the prototype’s original 5–15 ms parsing budget. The agentic request has a separate 3-second prototype timeout and retries with deterministic lexical OpenSearch DSL on failure. Likely production options are aggressive caching, a smaller distilled planner, or a separately budgeted service with circuit breaking and the same deterministic fallback.
 
 ## Safety contract
 
-The generated OpenSearch body is an intermediate artifact. Before execution, the application must enforce:
+The native `QueryPlanningTool` executes the generated body inside OpenSearch. The configured prompt and query-field list narrow its scope, but production hardening must still enforce:
 
 - configured index aliases and search pipelines;
 - request-provided and service-level field allowlists;
+- top-level search-source key and sort-field allowlists;
 - query-type allowlists;
 - `size`, `from`, `k`, and query-clause limits;
 - a ban on scripts, `script_score`, Painless, raw `query_string`, regex, and wildcard queries;
 - one bounded repair attempt followed by a deterministic rules/template fallback.
 
-The Python validator implements these offline checks. A production service should port or call the same contract at the execution boundary.
+The Python validator implements these checks offline. Before production rollout, add an equivalent request-processor policy or restrict the agent to reviewed search templates so enforcement remains inside the native pipeline.

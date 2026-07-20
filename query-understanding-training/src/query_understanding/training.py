@@ -1,4 +1,4 @@
-"""LoRA/QLoRA training entrypoint for the text-only query compiler task."""
+"""LoRA/QLoRA training entrypoint for native Agentic Search query planning."""
 
 from __future__ import annotations
 
@@ -40,9 +40,7 @@ def environment_report(include_training_stack: bool = False) -> dict[str, object
 
     cuda_available = torch.cuda.is_available()
     mps_available = bool(
-        getattr(torch.backends, "mps", None)
-        and torch.backends.mps.is_built()
-        and torch.backends.mps.is_available()
+        getattr(torch.backends, "mps", None) and torch.backends.mps.is_built() and torch.backends.mps.is_available()
     )
     backend = "cuda" if cuda_available else "mps" if mps_available else "cpu"
     required_packages = ("transformers", "trl", "peft", "datasets", "accelerate")
@@ -62,10 +60,7 @@ def environment_report(include_training_stack: bool = False) -> dict[str, object
     )
     report["ready"] = bool(
         stack_available
-        and (
-            (cuda_available and bf16_supported and packages.get("bitsandbytes") != "not-installed")
-            or mps_available
-        )
+        and ((cuda_available and bf16_supported and packages.get("bitsandbytes") != "not-installed") or mps_available)
     )
     return report
 
@@ -82,8 +77,10 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
     from trl import SFTConfig, SFTTrainer
 
     policy = load_policy(config.data.policy_file)
-    train_rows = training_rows(config.data.train_file, policy)
-    eval_rows = training_rows(config.data.eval_file, policy)
+    system_prompt = config.objective.system_prompt_file.read_text(encoding="utf-8").strip()
+    user_prompt_template = config.objective.user_prompt_file.read_text(encoding="utf-8").strip()
+    train_rows = training_rows(config.data.train_file, policy, system_prompt, user_prompt_template)
+    eval_rows = training_rows(config.data.eval_file, policy, system_prompt, user_prompt_template)
 
     tokenizer = AutoTokenizer.from_pretrained(
         config.model.name_or_path,

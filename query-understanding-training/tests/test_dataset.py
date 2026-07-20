@@ -11,8 +11,8 @@ def test_checked_in_datasets_validate(config: TrainingConfig, policy: CompilerPo
     eval_report = validate_dataset(config.data.eval_file, policy)
     assert train_report.ok, train_report.issues
     assert eval_report.ok, eval_report.issues
-    assert train_report.total == 3
-    assert eval_report.total == 3
+    assert train_report.total == 6
+    assert eval_report.total == 6
 
 
 def test_source_row_becomes_completion_only_conversation(config: TrainingConfig, policy: CompilerPolicy) -> None:
@@ -25,7 +25,20 @@ def test_source_row_becomes_completion_only_conversation(config: TrainingConfig,
     assert prompt[0]["role"] == "system"
     assert prompt[1]["role"] == "user"
     assert completion[0]["role"] == "assistant"
-    assert json.loads(completion[0]["content"])["schema_version"] == "psg_query_compiler_v1"
+    assert "Question: Shopper request: dress watch." in prompt[1]["content"]
+    user_content = prompt[1]["content"]
+    assert isinstance(user_content, str)
+    mapping_line = next(line for line in user_content.splitlines() if line.startswith("Mapping JSON string: "))
+    fields_line = next(line for line in user_content.splitlines() if line.startswith("Query Fields JSON string: "))
+    mapping_json = json.loads(mapping_line.removeprefix("Mapping JSON string: "))
+    fields_json = json.loads(fields_line.removeprefix("Query Fields JSON string: "))
+    assert json.loads(mapping_json) == example.input.index_mapping
+    assert json.loads(fields_json) == example.input.query_fields
+    assert mapping_line.startswith('Mapping JSON string: "{\\"_doc\\"')
+    decoded_completion = json.loads(completion[0]["content"])
+    assert decoded_completion == example.target_body.to_opensearch()
+    assert "schema_version" not in decoded_completion
+    assert "opensearch" not in decoded_completion
 
 
 def test_canonical_json_is_stable() -> None:

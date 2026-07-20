@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,6 +24,12 @@ class DataSettings(ConfigModel):
     train_file: Path
     eval_file: Path
     policy_file: Path
+
+
+class ObjectiveSettings(ConfigModel):
+    name: Literal["opensearch_agentic_query_planner_v1"]
+    system_prompt_file: Path
+    user_prompt_file: Path
 
 
 class QuantizationSettings(ConfigModel):
@@ -66,6 +73,7 @@ class TrainerSettings(ConfigModel):
 
 class TrainingConfig(ConfigModel):
     model: ModelSettings
+    objective: ObjectiveSettings
     data: DataSettings
     quantization: QuantizationSettings
     lora: LoraSettings
@@ -81,6 +89,12 @@ def load_training_config(path: Path) -> TrainingConfig:
     base = config_path.parent
     return config.model_copy(
         update={
+            "objective": config.objective.model_copy(
+                update={
+                    "system_prompt_file": _resolve(config.objective.system_prompt_file, base),
+                    "user_prompt_file": _resolve(config.objective.user_prompt_file, base),
+                }
+            ),
             "data": config.data.model_copy(
                 update={
                     "train_file": _resolve(config.data.train_file, base),

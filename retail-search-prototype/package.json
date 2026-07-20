@@ -10,10 +10,12 @@
     "opensearch:index": "node scripts/index-opensearch.mjs",
     "opensearch:create-ubi": "node scripts/create-ubi-indexes.mjs",
     "opensearch:bootstrap": "npm run opensearch:create-ubi && npm run opensearch:index",
+    "opensearch:agentic": "node scripts/configure-agentic-search.mjs",
     "search:api": "node scripts/search-api.mjs",
     "query:rewriter": "node scripts/tier2-rewriter.mjs",
-    "query:mistral": "node scripts/mistral-query-understanding.mjs",
-    "ubi:collector": "node scripts/ubi-collector.mjs"
+    "query:legacy-compiler": "node scripts/mistral-query-understanding.mjs",
+    "ubi:collector": "node scripts/ubi-collector.mjs",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "@opensearch-project/opensearch": "^3.6.0",

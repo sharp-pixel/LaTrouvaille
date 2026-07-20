@@ -10,6 +10,11 @@ def test_config_resolves_paths_and_pins_model(config: TrainingConfig) -> None:
     assert config.data.train_file.is_absolute()
     assert config.data.eval_file.is_absolute()
     assert config.data.policy_file.is_absolute()
+    assert config.objective.name == "opensearch_agentic_query_planner_v1"
+    assert config.objective.system_prompt_file.is_absolute()
+    assert config.objective.system_prompt_file.exists()
+    assert config.objective.user_prompt_file.is_absolute()
+    assert config.objective.user_prompt_file.exists()
     assert config.trainer.output_dir.is_absolute()
 
 
@@ -34,7 +39,13 @@ def test_lora_regex_targets_text_backbone_only(config: TrainingConfig) -> None:
 
 
 def test_fixture_paths_exist(config: TrainingConfig) -> None:
-    paths: tuple[Path, ...] = (config.data.train_file, config.data.eval_file, config.data.policy_file)
+    paths: tuple[Path, ...] = (
+        config.data.train_file,
+        config.data.eval_file,
+        config.data.policy_file,
+        config.objective.system_prompt_file,
+        config.objective.user_prompt_file,
+    )
     assert all(path.exists() for path in paths)
 
 
@@ -47,4 +58,4 @@ def test_macos_config_uses_native_mps_compatible_lora(project_root: Path) -> Non
     assert config.trainer.bf16 is False
     assert config.trainer.fp16 is True
     assert config.trainer.tf32 is False
-    assert config.trainer.output_dir.name == "lora-macos-v1"
+    assert config.trainer.output_dir.name == "lora-macos-agentic-v1"

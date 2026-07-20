@@ -78,6 +78,8 @@ export function App() {
   const [filters, setFilters] = useState({ category: [], condition: [], material: [], country: [] });
   const [maxPrice, setMaxPrice] = useState(DEFAULT_MAX_PRICE);
   const [favorites, setFavorites] = useState(new Set(["MR-0000001", "MR-0000009"]));
+  const [cart, setCart] = useState([]);
+  const [cartOpen, setCartOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [personaSelectorOpen, setPersonaSelectorOpen] = useState(false);
   const [activePersona, setActivePersona] = useState(getInitialPersona);
@@ -256,6 +258,35 @@ export function App() {
     });
   };
 
+  const addToCart = (product) => {
+    if (cart.some((item) => item.id === product.id)) {
+      setSelectedProduct(null);
+      setCartOpen(true);
+      return;
+    }
+
+    setCart((current) => (
+      current.some((item) => item.id === product.id) ? current : [...current, product]
+    ));
+    trackEvent({
+      actionName: "add_to_cart",
+      messageType: "CONVERSION",
+      object: product,
+      message: `add_to_cart ${product.item_id}`,
+    });
+    setSelectedProduct(null);
+    setCartOpen(true);
+  };
+
+  const removeFromCart = (product) => {
+    setCart((current) => current.filter((item) => item.id !== product.id));
+    trackEvent({
+      actionName: "remove_from_cart",
+      object: product,
+      message: `remove_from_cart ${product.item_id}`,
+    });
+  };
+
   const runSearch = (value = query) => {
     const normalized = value.trim() || "designer resale";
     const nextPlan = createQueryUnderstanding(normalized, products);
@@ -306,7 +337,8 @@ export function App() {
         setQuery={setQuery}
         runSearch={runSearch}
         suggestions={suggestions}
-        favoritesCount={favorites.size}
+        cartCount={cart.length}
+        onOpenCart={() => setCartOpen(true)}
         persona={activePersona}
         menuButtonRef={mobileMenuButtonRef}
         onOpenPersona={openPersonaSelector}
@@ -389,12 +421,26 @@ export function App() {
         </div>
       )}
 
+      {cartOpen && (
+        <CartDrawer
+          items={cart}
+          onClose={() => setCartOpen(false)}
+          onRemove={removeFromCart}
+          onProduct={(product) => {
+            setCartOpen(false);
+            openProduct(product);
+          }}
+          trackEvent={trackEvent}
+        />
+      )}
+
       {selectedProduct && (
         <ProductModal
           product={selectedProduct}
           favorite={favorites.has(selectedProduct.id)}
+          inCart={cart.some((item) => item.id === selectedProduct.id)}
+          addToCart={addToCart}
           toggleFavorite={toggleFavorite}
-          trackEvent={trackEvent}
           onClose={() => setSelectedProduct(null)}
         />
       )}
@@ -409,7 +455,8 @@ function Header({
   setQuery,
   runSearch,
   suggestions,
-  favoritesCount,
+  cartCount,
+  onOpenCart,
   persona,
   menuButtonRef,
   onOpenPersona,
@@ -457,9 +504,9 @@ function Header({
           <button className="icon-button" type="button" aria-label="Notifications">
             <Bell size={18} />
           </button>
-          <button className="bag-button" type="button" aria-label={`${favoritesCount} saved items`}>
+          <button className="bag-button" type="button" aria-label={`Open bag, ${cartCount} items`} onClick={onOpenCart}>
             <ShoppingBag size={20} />
-            <span>{favoritesCount}</span>
+            <span>{cartCount}</span>
           </button>
         </div>
       </div>
@@ -796,11 +843,12 @@ function ResultsPage({
 }
 
 function UbiTelemetryPanel({ queryId, events, searchMeta }) {
-  const recent = events.slice(0, 4);
+  const queryRecord = events.find((event) => event.type === "query" && event.query_id === queryId);
+  const recentInteractions = events
+    .filter((event) => event.type === "event" && event.query_id === queryId)
+    .slice(0, 3);
+  const recent = queryRecord ? [queryRecord, ...recentInteractions] : recentInteractions;
   const sourceLabel = searchMeta?.source === "opensearch" ? "OpenSearch" : "Local fallback";
-  const tier2 = searchMeta?.enhancements?.querqy || "not_called";
-  const rules = searchMeta?.enhancements?.rules || [];
-  const mistral = searchMeta?.enhancements?.mistral;
   return (
     <section className="ubi-panel" aria-label="User behavior telemetry">
       <div>
@@ -810,11 +858,6 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
           {sourceLabel}
           {Number.isFinite(searchMeta?.tookMs) ? ` ${searchMeta.tookMs} ms` : ""}
         </small>
-        <small>
-          Querqy {tier2}
-          {rules.length ? `: ${rules.slice(0, 2).join(", ")}` : ""}
-        </small>
-        {mistral && <small>Mistral {mistral} ({searchMeta.enhancements.mistralMode})</small>}
       </div>
       <ol>
         {recent.map((event) => (
@@ -1112,7 +1155,75 @@ function MobileNav({ persona, onOpenPersona, onClose, setMode }) {
   );
 }
 
-function ProductModal({ product, favorite, toggleFavorite, trackEvent, onClose }) {
+function CartDrawer({ items, onClose, onRemove, onProduct, trackEvent }) {
+  const subtotal = items.reduce((total, item) => total + item.price, 0);
+
+  return (
+    <div className="drawer-backdrop cart-backdrop" onClick={onClose}>
+      <aside className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Shopping bag">
+        <div className="cart-header">
+          <div>
+            <p className="eyebrow">Your selection</p>
+            <h2>Shopping bag</h2>
+          </div>
+          <button className="icon-button" type="button" aria-label="Close bag" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {items.length === 0 ? (
+          <div className="cart-empty">
+            <ShoppingBag size={32} strokeWidth={1.4} />
+            <h3>Your bag is empty</h3>
+            <p>Each listing is one of a kind. Add a piece before someone else finds it.</p>
+            <button className="secondary-button" type="button" onClick={onClose}>
+              Continue shopping
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="cart-items">
+              {items.map((item) => (
+                <article className="cart-item" key={item.id}>
+                  <button className="cart-item-image" type="button" onClick={() => onProduct(item)}>
+                    <img src={item.image} alt="" />
+                  </button>
+                  <div className="cart-item-copy">
+                    <button type="button" onClick={() => onProduct(item)}>
+                      <strong>{item.brand}</strong>
+                      <span>{item.title}</span>
+                    </button>
+                    <small>One of a kind</small>
+                    <div>
+                      <b>{formatPrice(item.price)}</b>
+                      <button type="button" onClick={() => onRemove(item)}>Remove</button>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <div className="cart-summary">
+              <div>
+                <span>Subtotal</span>
+                <strong>{formatPrice(subtotal)}</strong>
+              </div>
+              <p>Shipping and taxes calculated at checkout.</p>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => trackEvent({ actionName: "checkout_start", messageType: "CONVERSION", message: `checkout_start ${items.length} items` })}
+              >
+                Checkout
+              </button>
+            </div>
+          </>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function ProductModal({ product, favorite, inCart, addToCart, toggleFavorite, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <section className="product-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
@@ -1151,16 +1262,9 @@ function ProductModal({ product, favorite, toggleFavorite, trackEvent, onClose }
             <button
               className="primary-button"
               type="button"
-              onClick={() =>
-                trackEvent({
-                  actionName: "add_to_cart",
-                  messageType: "CONVERSION",
-                  object: product,
-                  message: `add_to_cart ${product.item_id}`,
-                })
-              }
+              onClick={() => addToCart(product)}
             >
-              Add to bag
+              {inCart ? "View in bag" : "Add to bag"}
             </button>
             <button className="secondary-button" type="button" onClick={() => toggleFavorite(product.id, product)}>
               <Heart size={18} fill={favorite ? "currentColor" : "none"} />

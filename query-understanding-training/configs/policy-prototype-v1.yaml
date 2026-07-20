@@ -36,13 +36,17 @@ allowed_fields:
 allowed_query_types:
   - bool
   - match
+  - match_all
+  - match_phrase
   - multi_match
+  - prefix
   - range
   - rank_feature
   - term
   - terms
 
 forbidden_keys:
+  - agentic
   - painless
   - query_string
   - regexp
@@ -59,7 +63,7 @@ allowed_constraint_ops:
   - term
   - terms
 
-max_size: 50
-max_from: 1000
+max_size: 96
+max_track_total_hits: 10000
 max_k: 500
 max_query_clauses: 100

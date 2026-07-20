@@ -1,20 +1,21 @@
-# Query Understanding Fine-Tuning
+# Native Agentic Search Query-Planning Fine-Tuning
 
-This is the isolated Python project for fine-tuning a deterministic, persona-aware product-search query compiler. It turns a raw query plus user context and an allowlisted catalog schema into a versioned retrieval plan and a policy-checked OpenSearch request.
+This Python project fine-tunes the model used by OpenSearch's native Agentic Search `QueryPlanningTool`. The serving objective is deliberately narrow: given the exact native question, index mapping, and `query_fields`, emit one complete, policy-checked OpenSearch request body.
 
-The project follows the supplied design for `mistralai/Ministral-3-8B-Instruct-2512-BF16` and is intentionally not wired into the customer-blocking search path yet. The current React/Node prototype expects Tier-1 query understanding to complete within a very small latency budget; the adapter should first be evaluated offline and in shadow traffic.
+The assistant completion contains `size`, `track_total_hits`, `query`, and any requested `sort`. It never contains an index, search pipeline, `_source`, compiler envelope, intent metadata, confidence scores, or prose. OpenSearch preserves the service-owned `_source` while replacing the rest of the incoming search body with the model-generated body.
 
 ## What is included
 
 - A `uv` project with a committed lockfile, CUDA PyTorch for Linux/Windows x86_64, and native MPS PyTorch for Apple Silicon macOS.
-- A strict Pydantic input/output contract for `psg_query_compiler_v1`.
+- A strict `opensearch_agentic_query_planner_v1` dataset contract.
+- Shared system and user prompt assets used by both training and OpenSearch agent registration.
 - Canonical JSONL fixtures and completion-only chat conversion.
-- Dataset, index, field, query-type, clause-count, `size`, and `k` validation.
+- Dataset, index, mapping/query-field intersection, top-level key, sort, required-filter, query-type, clause-count, `size`, and `k` validation.
 - A text-only QLoRA runner for the multimodal Ministral checkpoint.
 - Explicit assistant-token masking; target JSON is rejected when it exceeds the sequence limit, never truncated.
 - LoRA module selection restricted to `language_model`; vision and projector weights remain frozen.
-- Structural evaluation for JSON validity, schema validity, policy validity, category, query type, expertise, and retrieval-resolution accuracy.
-- Run manifests with dataset/policy/lock hashes and the immutable base-model revision.
+- Structural evaluation for JSON validity, request-body validity, policy validity, exact request match, and required-filter recall.
+- Run manifests with objective, prompt, dataset, policy, lock, and immutable base-model hashes.
 
 The checked-in JSONL files are executable fixtures, not a production training corpus. The design calls for 1,000–5,000 reviewed SFT examples and at least 1,000 held-out labeled queries.
 
@@ -75,8 +76,8 @@ uv run --no-editable quft show-config
 # Validate train and evaluation examples against the contract and policy
 uv run --no-editable quft validate-data
 
-# Export the formal output JSON Schema
-uv run --no-editable quft export-schema --output schemas/psg_query_compiler_v1.schema.json
+# Export the native objective row schema
+uv run --no-editable quft export-schema --output schemas/opensearch_agentic_query_planner_v1.schema.json
 
 # Validate the setup without downloading model weights
 uv run --no-editable quft train
@@ -88,21 +89,23 @@ uv run --no-editable quft evaluate --predictions predictions/eval.jsonl
 Prediction rows use this shape:
 
 ```json
-{"example_id":"formal-watch-quiet-expert","output":{"schema_version":"psg_query_compiler_v1"}}
+{"example_id":"formal-watch-quiet-expert","output":{"size":24,"track_total_hits":10000,"query":{"bool":{}}}}
 ```
 
-`output` may be a JSON object or a JSON string. It must contain the full contract to count as schema-valid.
+`output` may be a JSON object or a JSON string. Its root must be the executable OpenSearch request body.
 
 ## Data contract choices
 
 The design document leaves a few points implicit. This implementation makes them reproducible:
 
-- Source rows store structured `input` and `output` objects. The loader serializes both canonically and creates conversational prompt/completion records at training time.
+- Source rows store the exact native `query_text`, mapping, query fields, evaluation expectations, and target body. Metadata never enters the assistant completion.
+- Training and `scripts/configure-agentic-search.mjs` load the same packaged system and user prompt files, preventing serving/training prompt drift.
+- The offline renderer mirrors QueryPlanningTool's JSON-string serialization of the OpenSearch 3.7 `_doc` mapping source and `query_fields`; this shape was verified against a live native request.
 - Completion labels are masked explicitly; training does not depend on `{% generation %}` markers in the model chat template.
-- `connoisseur` is normalized to the `expert` label before examples enter this dataset.
-- Resolution weights are dense and must sum to 1 within a 0.01 tolerance.
-- Mental-model weights are dense, independently bounded to `[0, 1]`, and use the eight declared universal axes. Undeclared labels such as `safe_choice` do not enter the v1 schema.
-- The model produces both a structured plan and a DSL candidate because that is the supplied training target. The candidate is never trusted directly: policy validation is mandatory and production should recompile or sanitize it.
+- Persona and expertise annotations are excluded from the native objective because the prototype does not expose personalized ranking. Evaluation personas remain UBI context only.
+- `_source` is omitted from every target because the agentic request processor preserves the incoming service-owned `_source`.
+- Explicit sort modes are learned inside the generated body; the incoming `agentic` request must not carry an outer `sort`.
+- The legacy `psg_query_compiler_v1` classes/schema remain only as offline annotation compatibility and are not serving targets.
 
 See [docs/data-contract.md](docs/data-contract.md) for the full row format and slice targets.
 

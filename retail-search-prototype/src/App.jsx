@@ -16,12 +16,13 @@ import {
 import { categoryTiles, filterGroups, navItems, popularSearches, products } from "./data/catalog.js";
 import {
   defaultPersona,
+  getEffectiveSearchPersona,
   getPersonaById,
   getPersonaSearchRequestIdentity,
   personas,
 } from "./data/personas.js";
 import { buildLocalPersonalizationPlan } from "./lib/agentic-search.js";
-import { createQueryUnderstanding, localSearchProducts } from "./lib/search.js";
+import { createLiteralQueryPlan, createQueryUnderstanding, localSearchProducts } from "./lib/search.js";
 import { getRecentUbiEvents, recordUbiEvent, recordUbiQuery } from "./lib/ubi.js";
 
 const SEARCH_ENDPOINT = import.meta.env.VITE_SEARCH_ENDPOINT || "http://127.0.0.1:8790";
@@ -97,6 +98,7 @@ export function App() {
   const [cart, setCart] = useState([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [queryUnderstandingEnabled, setQueryUnderstandingEnabled] = useState(true);
   const [personaSelectorOpen, setPersonaSelectorOpen] = useState(false);
   const [activePersona, setActivePersona] = useState(getInitialPersona);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -115,20 +117,29 @@ export function App() {
     enhancements: { querqy: "not_called", rules: [] },
   });
 
-  const localPlan = useMemo(() => createQueryUnderstanding(activeQuery, products), [activeQuery]);
+  const localPlan = useMemo(
+    () => queryUnderstandingEnabled
+      ? createQueryUnderstanding(activeQuery, products)
+      : createLiteralQueryPlan(activeQuery),
+    [activeQuery, queryUnderstandingEnabled],
+  );
+  const searchPersona = getEffectiveSearchPersona(activePersona.id, queryUnderstandingEnabled);
   const localPersonalizationPlan = useMemo(
-    () => buildLocalPersonalizationPlan(localPlan, activePersona),
-    [activePersona, localPlan],
+    () => ({
+      ...buildLocalPersonalizationPlan(localPlan, searchPersona),
+      queryUnderstanding: { status: queryUnderstandingEnabled ? "enabled" : "bypassed" },
+    }),
+    [localPlan, queryUnderstandingEnabled, searchPersona],
   );
   const activePlan = useMemo(() => {
-    const returnedPlan = searchResponse.personaId === activePersona.id ? searchResponse.queryPlan : null;
+    const returnedPlan = searchResponse.personaId === searchPersona.id ? searchResponse.queryPlan : null;
     if (!returnedPlan) return localPersonalizationPlan;
     return {
       ...localPlan,
       ...returnedPlan,
       rewritten: returnedPlan.personalizedRewrite || returnedPlan.rewritten || localPlan.rewritten,
     };
-  }, [activePersona.id, localPersonalizationPlan, localPlan, searchResponse.personaId, searchResponse.queryPlan]);
+  }, [localPersonalizationPlan, localPlan, searchPersona.id, searchResponse.personaId, searchResponse.queryPlan]);
   const suggestions = useMemo(() => {
     const seed = query.trim().toLowerCase();
     if (!seed) return popularSearches.slice(0, 6);
@@ -136,8 +147,15 @@ export function App() {
   }, [query]);
 
   const localProducts = useMemo(
-    () => localSearchProducts(products, { query: activeQuery, filters, maxPrice, sort, persona: activePersona }),
-    [activePersona, activeQuery, filters, maxPrice, sort],
+    () => localSearchProducts(products, {
+      query: activeQuery,
+      filters,
+      maxPrice,
+      sort,
+      persona: searchPersona,
+      queryUnderstanding: queryUnderstandingEnabled,
+    }),
+    [activeQuery, filters, maxPrice, queryUnderstandingEnabled, searchPersona, sort],
   );
   const sortedProducts = searchResponse.products ?? localProducts;
 
@@ -147,7 +165,7 @@ export function App() {
     const startedAt = performance.now();
     setSearchResponse({
       products: localProducts,
-      personaId: activePersona.id,
+      personaId: searchPersona.id,
       queryPlan: localPersonalizationPlan,
       source: "local",
       status: "loading",
@@ -166,6 +184,7 @@ export function App() {
         maxPrice,
         sort,
         size: 96,
+        queryUnderstanding: queryUnderstandingEnabled,
         ...getPersonaSearchRequestIdentity(activePersona.id),
       }),
       signal: controller.signal,
@@ -178,7 +197,7 @@ export function App() {
         if (controller.signal.aborted) return;
         setSearchResponse({
           products: payload.products || [],
-          personaId: activePersona.id,
+          personaId: searchPersona.id,
           queryPlan:
             payload.queryPlan || (payload.source === "local-fallback" ? localPersonalizationPlan : null),
           source: payload.source || "opensearch",
@@ -193,7 +212,7 @@ export function App() {
         if (controller.signal.aborted) return;
         setSearchResponse({
           products: localProducts,
-          personaId: activePersona.id,
+          personaId: searchPersona.id,
           queryPlan: localPersonalizationPlan,
           source: "local",
           status: "degraded",
@@ -205,13 +224,20 @@ export function App() {
       });
 
     return () => controller.abort();
-  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, localProducts, maxPrice, mode, sort]);
+  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, localProducts, maxPrice, mode, queryUnderstandingEnabled, searchPersona.id, sort]);
 
   useEffect(() => {
     if (mode !== "results") return;
     if (searchResponse.status === "idle" || searchResponse.status === "loading") return;
-    if (searchResponse.personaId !== activePersona.id) return;
-    const signature = JSON.stringify({ activeQuery, filters, maxPrice, sort, personaId: activePersona.id });
+    if (searchResponse.personaId !== searchPersona.id) return;
+    const signature = JSON.stringify({
+      activeQuery,
+      filters,
+      maxPrice,
+      sort,
+      personaId: searchPersona.id,
+      queryUnderstanding: queryUnderstandingEnabled,
+    });
     if (lastQuerySignature.current === signature) return;
     lastQuerySignature.current = signature;
 
@@ -231,7 +257,7 @@ export function App() {
     });
     setUbiQueryId(queryRecord.query_id);
     setUbiEvents(getRecentUbiEvents().slice(0, 6));
-  }, [activePersona, activeQuery, filters, localPlan, maxPrice, mode, searchResponse.personaId, searchResponse.queryPlan, searchResponse.source, searchResponse.status, searchResponse.tookMs, sort, sortedProducts]);
+  }, [activePersona, activeQuery, filters, localPlan, maxPrice, mode, queryUnderstandingEnabled, searchPersona.id, searchResponse.personaId, searchResponse.queryPlan, searchResponse.source, searchResponse.status, searchResponse.tookMs, sort, sortedProducts]);
 
   const trackEvent = (payload) => {
     if (!ubiQueryId) return;
@@ -335,7 +361,9 @@ export function App() {
 
   const runSearch = (value = query) => {
     const normalized = value.trim() || "designer resale";
-    const nextPlan = createQueryUnderstanding(normalized, products);
+    const nextPlan = queryUnderstandingEnabled
+      ? createQueryUnderstanding(normalized, products)
+      : createLiteralQueryPlan(normalized);
     setActiveQuery(normalized);
     setQuery(normalized);
     setMaxPrice(nextPlan.priceMax || DEFAULT_MAX_PRICE);
@@ -386,6 +414,8 @@ export function App() {
         cartCount={cart.length}
         onOpenCart={() => setCartOpen(true)}
         persona={activePersona}
+        queryUnderstandingEnabled={queryUnderstandingEnabled}
+        onToggleQueryUnderstanding={() => setQueryUnderstandingEnabled((enabled) => !enabled)}
         menuButtonRef={mobileMenuButtonRef}
         onOpenPersona={openPersonaSelector}
         setMode={setMode}
@@ -438,6 +468,8 @@ export function App() {
       {mobileNavOpen && (
         <MobileNav
           persona={activePersona}
+          queryUnderstandingEnabled={queryUnderstandingEnabled}
+          onToggleQueryUnderstanding={() => setQueryUnderstandingEnabled((enabled) => !enabled)}
           onOpenPersona={() => openPersonaSelector(mobileMenuButtonRef.current)}
           onClose={() => setMobileNavOpen(false)}
           setMode={setMode}
@@ -504,6 +536,8 @@ function Header({
   cartCount,
   onOpenCart,
   persona,
+  queryUnderstandingEnabled,
+  onToggleQueryUnderstanding,
   menuButtonRef,
   onOpenPersona,
   setMode,
@@ -535,6 +569,17 @@ function Header({
           <a className="sell-link" href="#seller">
             Sell an item
           </a>
+          <button
+            className={`query-understanding-toggle ${queryUnderstandingEnabled ? "is-on" : "is-off"}`}
+            type="button"
+            role="switch"
+            aria-checked={queryUnderstandingEnabled}
+            onClick={onToggleQueryUnderstanding}
+          >
+            <Sparkles size={15} />
+            <span>Query understanding</span>
+            <i aria-hidden="true">{queryUnderstandingEnabled ? "On" : "Off"}</i>
+          </button>
           <button
             className="persona-trigger"
             type="button"
@@ -788,20 +833,22 @@ function ResultsPage({
         </button>
       </section>
 
-      <section className="query-strip">
-        <div className="query-intent">
-          <Sparkles size={18} />
-          <div>
-            <span>{activePlan.intent}</span>
-            <strong>{activePlan.rewritten}</strong>
+      {activePlan.queryUnderstanding?.status !== "bypassed" && (
+        <section className="query-strip">
+          <div className="query-intent">
+            <Sparkles size={18} />
+            <div>
+              <span>{activePlan.intent}</span>
+              <strong>{activePlan.rewritten}</strong>
+            </div>
           </div>
-        </div>
-        <div className="query-chips">
-          {activePlan.chips.map((chip) => (
-            <span key={chip}>{chip}</span>
-          ))}
-        </div>
-      </section>
+          <div className="query-chips">
+            {activePlan.chips.map((chip) => (
+              <span key={chip}>{chip}</span>
+            ))}
+          </div>
+        </section>
+      )}
 
       <UbiTelemetryPanel queryId={ubiQueryId} events={ubiEvents} searchMeta={searchMeta} />
 
@@ -1175,7 +1222,14 @@ function PersonaModal({ persona, onSelect, onClose }) {
   );
 }
 
-function MobileNav({ persona, onOpenPersona, onClose, setMode }) {
+function MobileNav({
+  persona,
+  queryUnderstandingEnabled,
+  onToggleQueryUnderstanding,
+  onOpenPersona,
+  onClose,
+  setMode,
+}) {
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="mobile-nav" onClick={(event) => event.stopPropagation()}>
@@ -1207,6 +1261,19 @@ function MobileNav({ persona, onOpenPersona, onClose, setMode }) {
             <strong>{persona.id === "anonymous" ? "Sign in" : persona.name}</strong>
           </span>
           <ChevronRight size={16} />
+        </button>
+        <button
+          className="mobile-query-understanding-toggle"
+          type="button"
+          role="switch"
+          aria-checked={queryUnderstandingEnabled}
+          onClick={onToggleQueryUnderstanding}
+        >
+          <span>
+            <small>Search controls</small>
+            <strong>Query understanding</strong>
+          </span>
+          <b>{queryUnderstandingEnabled ? "On" : "Off"}</b>
         </button>
         {navItems.map((item) => (
           <a href={`#${item}`} key={item} onClick={onClose}>

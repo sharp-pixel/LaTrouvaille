@@ -294,6 +294,25 @@ export function createQueryUnderstanding(query, catalog) {
     priceMax,
     requiresTextMatch: Boolean(brand || categories.length || materials.length || tokens.length),
     rewritten: rewrittenParts.join(" ") || query || "pre-loved designer items",
+    tokenOperator: "and",
+    tokens,
+  };
+}
+
+export function createLiteralQueryPlan(query) {
+  const literalQuery = String(query ?? "").trim();
+  const tokens = normalizeText(literalQuery).split(" ").filter(Boolean);
+  return {
+    brand: "",
+    categories: [],
+    chips: [],
+    intent: "",
+    materials: [],
+    phraseIntents: [],
+    priceMax: null,
+    requiresTextMatch: Boolean(tokens.length),
+    rewritten: literalQuery || "pre-loved designer items",
+    tokenOperator: "or",
     tokens,
   };
 }
@@ -327,7 +346,8 @@ function matchesQuery(product, understanding) {
   if (!understanding.tokens.length) return true;
 
   const text = productText(product);
-  return understanding.tokens.every((token) => text.includes(token));
+  const tokenMatches = understanding.tokens.map((token) => text.includes(token));
+  return understanding.tokenOperator === "or" ? tokenMatches.some(Boolean) : tokenMatches.every(Boolean);
 }
 
 function scoreProduct(product, understanding, selectedFilters) {
@@ -377,11 +397,13 @@ function scorePersonaAffinity(product, persona) {
   return Math.min(affinity, 30);
 }
 
-export function localSearchProducts(items, { query, filters, maxPrice, sort, persona }) {
-  const understanding = createQueryUnderstanding(query, items);
+export function localSearchProducts(items, { query, filters, maxPrice, sort, persona, queryUnderstanding = true }) {
+  const understanding = queryUnderstanding
+    ? createQueryUnderstanding(query, items)
+    : createLiteralQueryPlan(query);
   const requestedPriceLimit = Number(maxPrice) || 20000;
   const priceLimit = Math.min(requestedPriceLimit, understanding.priceMax ?? requestedPriceLimit);
-  const effectiveSort = deriveEffectiveSort(query, sort);
+  const effectiveSort = queryUnderstanding ? deriveEffectiveSort(query, sort) : sort;
   const filtered = items
     .filter((item) => matchesFacetFilters(item, filters))
     .filter((item) => item.price <= priceLimit)

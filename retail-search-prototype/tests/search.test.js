@@ -1,12 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  createLiteralQueryPlan,
   createQueryUnderstanding,
   deriveEffectiveSort,
   localSearchProducts,
   parseMaxPrice,
   stripQueryControls,
 } from "../src/lib/search.js";
+
+test("literal query plans do not infer shopper intent or controls", () => {
+  const plan = createLiteralQueryPlan("dress watch under 1000 newest");
+
+  assert.deepEqual(plan.categories, []);
+  assert.deepEqual(plan.materials, []);
+  assert.deepEqual(plan.phraseIntents, []);
+  assert.deepEqual(plan.chips, []);
+  assert.equal(plan.brand, "");
+  assert.equal(plan.intent, "");
+  assert.equal(plan.priceMax, null);
+  assert.equal(plan.rewritten, "dress watch under 1000 newest");
+  assert.equal(plan.tokenOperator, "or");
+  assert.deepEqual(plan.tokens, ["dress", "watch", "under", "1000", "newest"]);
+});
 
 const items = [
   {
@@ -61,6 +77,19 @@ const items = [
     score: 30,
   },
 ];
+
+test("literal local search matches any query token", () => {
+  const results = localSearchProducts(items, {
+    query: "bag nonexistent",
+    filters: {},
+    maxPrice: 20000,
+    sort: "Recommended",
+    persona: null,
+    queryUnderstanding: false,
+  });
+
+  assert.equal(results.length, items.length);
+});
 
 test("shared control cleanup keeps lexical and local fallback browse-only queries nonrestrictive", () => {
   for (const query of ["newest", "cheapest", "price drops"]) {

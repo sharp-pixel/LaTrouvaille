@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   MAX_PERSONA_QUERY_EXPANSION_LENGTH,
+  getEffectiveSearchPersona,
   getPersonaById,
   getPersonaSearchContext,
   getPersonaSearchRequestIdentity,
@@ -20,6 +21,12 @@ test("persona search expansions are bounded and Anonymous remains unprofiled", (
 test("browser search identity contains only the allowlisted persona ID", () => {
   assert.deepEqual(getPersonaSearchRequestIdentity("fashion-insider"), { personaId: "fashion-insider" });
   assert.deepEqual(getPersonaSearchRequestIdentity("unknown"), { personaId: "anonymous" });
+});
+
+test("query-understanding bypass forces Anonymous regardless of the selected persona", () => {
+  assert.equal(getEffectiveSearchPersona("watch-collector", true).id, "watch-collector");
+  assert.equal(getEffectiveSearchPersona("watch-collector", false).id, "anonymous");
+  assert.equal(getEffectiveSearchPersona("unknown", true).id, "anonymous");
 });
 
 test("search context includes shopping details but excludes identifying presentation fields", () => {

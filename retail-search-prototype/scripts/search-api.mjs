@@ -1,7 +1,7 @@
 import { Client } from "@opensearch-project/opensearch";
 import http from "node:http";
 import { products } from "../src/data/catalog.js";
-import { getPersonaById, getPersonaSearchContext } from "../src/data/personas.js";
+import { getEffectiveSearchPersona, getPersonaSearchContext } from "../src/data/personas.js";
 import {
   AGENTIC_FILTER_FIELDS,
   buildAgenticQuery,
@@ -14,7 +14,13 @@ import {
   deriveEffectiveSort,
   validateAgenticDsl,
 } from "../src/lib/agentic-search.js";
-import { createQueryUnderstanding, localSearchProducts, normalizeText, stripQueryControls } from "../src/lib/search.js";
+import {
+  createLiteralQueryPlan,
+  createQueryUnderstanding,
+  localSearchProducts,
+  normalizeText,
+  stripQueryControls,
+} from "../src/lib/search.js";
 
 const port = Number(process.env.SEARCH_API_PORT || 8790);
 const index = process.env.OPENSEARCH_ALIAS || process.env.OPENSEARCH_INDEX || "secondhand_items_current";
@@ -149,9 +155,17 @@ function addPhraseIntentBoosts(should, phraseIntents = []) {
   });
 }
 
-function buildQuery({ query, filters, maxPrice, sort, tier2Rewrite, personaContext }) {
-  const understanding = createQueryUnderstanding(query, products);
-  const relevanceQuery = stripQueryControls(query);
+function buildQuery({
+  query,
+  filters,
+  maxPrice,
+  sort,
+  tier2Rewrite,
+  personaContext,
+  understanding,
+  queryUnderstandingEnabled,
+}) {
+  const relevanceQuery = queryUnderstandingEnabled ? stripQueryControls(query) : query.trim();
   const filter = [
     { term: { availability: "active" } },
     { range: { price: { lte: Number(maxPrice) || 20000 } } },
@@ -183,7 +197,7 @@ function buildQuery({ query, filters, maxPrice, sort, tier2Rewrite, personaConte
       multi_match: {
         query: understanding.tokens.join(" "),
         fields: ["title^4", "canonical_text^3", "description^2", "material", "color", "reasons"],
-        operator: "and",
+        operator: understanding.tokenOperator || "and",
       },
     });
   }
@@ -298,20 +312,23 @@ async function search(payload) {
   const maxPrice = Number.isFinite(requestedMaxPrice)
     ? Math.min(Math.max(Math.trunc(requestedMaxPrice), 1), 20000)
     : 20000;
+  const queryUnderstandingEnabled = payload.queryUnderstanding !== false;
   const requestedSort = String(payload.sort || "Recommended");
   const selectedSort = ["Recommended", "Lowest price", "Newest", "Price drop"].includes(requestedSort)
     ? requestedSort
     : "Recommended";
-  const sort = deriveEffectiveSort(query, selectedSort);
+  const sort = queryUnderstandingEnabled ? deriveEffectiveSort(query, selectedSort) : selectedSort;
   const requestedSize = Number(payload.size);
   const size = Number.isFinite(requestedSize) ? Math.min(Math.max(Math.trunc(requestedSize), 1), 96) : 48;
   // The browser sends only an allowlisted identifier. Ignore any client-provided
   // persona fields and resolve the authoritative profile on the server.
   const personaId = typeof payload.personaId === "string" ? payload.personaId.slice(0, 64) : "anonymous";
-  const persona = getPersonaById(personaId);
+  const persona = getEffectiveSearchPersona(personaId, queryUnderstandingEnabled);
   const personaSearchContext = getPersonaSearchContext(persona.id);
   const personaContext = buildTrustedPersonaContext(personaSearchContext);
-  const understanding = createQueryUnderstanding(query, products);
+  const understanding = queryUnderstandingEnabled
+    ? createQueryUnderstanding(query, products)
+    : createLiteralQueryPlan(query);
   const { filters: effectiveFilters, maxPrice: effectiveMaxPrice } = deriveAgenticServiceConstraints({
     filters,
     maxPrice,
@@ -320,11 +337,17 @@ async function search(payload) {
   const serviceTextRecipe = buildServiceTextRecipe({ query, filters: effectiveFilters, sort, understanding });
   const agenticEligible = Boolean(serviceTextRecipe.textQuery);
   const personalization = (status) => {
-    const effectiveStatus = personaContext.mode === "unprofiled" ? "unprofiled" : status;
-    const personalizedRewrite = buildPersonalizedRewrite(
-      serviceTextRecipe.textQuery || understanding.rewritten,
-      personaSearchContext,
-    );
+    const effectiveStatus = !queryUnderstandingEnabled
+      ? "bypassed"
+      : personaContext.mode === "unprofiled"
+        ? "unprofiled"
+        : status;
+    const personalizedRewrite = queryUnderstandingEnabled
+      ? buildPersonalizedRewrite(
+          serviceTextRecipe.textQuery || understanding.rewritten,
+          personaSearchContext,
+        )
+      : understanding.rewritten;
     return {
       personalizedRewrite,
       personalization: {
@@ -362,7 +385,7 @@ async function search(payload) {
   let agenticError = null;
   let agenticDslQuery = null;
 
-  if (agenticMode === "active" && query.trim() && agenticEligible) {
+  if (queryUnderstandingEnabled && agenticMode === "active" && query.trim() && agenticEligible) {
     try {
       const body = {
         query: buildAgenticQuery({
@@ -403,6 +426,7 @@ async function search(payload) {
         queryPlan: {
           ...understanding,
           ...personalization("applied"),
+          queryUnderstanding: { status: "enabled" },
           dslQuery: agenticDslQuery,
           agentic: {
             status: "applied",
@@ -410,6 +434,7 @@ async function search(payload) {
           },
         },
         enhancements: {
+          queryUnderstanding: "enabled",
           agentic: "applied",
           agenticMode,
           agenticPipeline,
@@ -424,8 +449,15 @@ async function search(payload) {
     }
   }
 
-  const tier2Rewrite = await fetchTier2Rewrite(query, understanding);
+  const tier2Rewrite = queryUnderstandingEnabled
+    ? await fetchTier2Rewrite(query, understanding)
+    : { status: "bypassed", tookMs: 0, rules: [] };
   let lexicalDslQuery;
+  const inactiveAgenticStatus = !queryUnderstandingEnabled
+    ? "bypassed"
+    : agenticMode === "active"
+      ? "skipped"
+      : "disabled";
 
   try {
     lexicalDslQuery = {
@@ -438,6 +470,8 @@ async function search(payload) {
         sort,
         tier2Rewrite,
         personaContext: personaSearchContext,
+        understanding,
+        queryUnderstandingEnabled,
       }),
       _source: sourceFields,
     };
@@ -455,19 +489,21 @@ async function search(payload) {
       queryPlan: {
         ...understanding,
         ...personalization(agenticError ? "fallback" : "applied"),
+        queryUnderstanding: { status: queryUnderstandingEnabled ? "enabled" : "bypassed" },
         dslQuery: lexicalDslQuery,
         tier2: tier2Rewrite,
         agentic: {
-          status: agenticError ? "fallback" : agenticMode === "active" ? "skipped" : "disabled",
+          status: agenticError ? "fallback" : inactiveAgenticStatus,
           pipeline: agenticPipeline,
           error: agenticError?.message || null,
         },
       },
       enhancements: {
+        queryUnderstanding: queryUnderstandingEnabled ? "enabled" : "bypassed",
         querqy: tier2Rewrite.status,
         rules: tier2Rewrite.rules || [],
         tookMs: tier2Rewrite.tookMs,
-        agentic: agenticError ? "fallback" : agenticMode === "active" ? "skipped" : "disabled",
+        agentic: agenticError ? "fallback" : inactiveAgenticStatus,
         agenticMode,
         agenticPipeline,
         agenticError: agenticError?.message || null,
@@ -483,6 +519,7 @@ async function search(payload) {
       maxPrice: effectiveMaxPrice,
       sort,
       persona,
+      queryUnderstanding: queryUnderstandingEnabled,
     }).slice(0, size);
     return {
       index,
@@ -493,19 +530,21 @@ async function search(payload) {
       queryPlan: {
         ...understanding,
         ...personalization("fallback"),
+        queryUnderstanding: { status: queryUnderstandingEnabled ? "enabled" : "bypassed" },
         dslQuery: lexicalDslQuery,
         tier2: tier2Rewrite,
         agentic: {
-          status: agenticError ? "failed" : agenticMode === "active" ? "skipped" : "disabled",
+          status: agenticError ? "failed" : inactiveAgenticStatus,
           pipeline: agenticPipeline,
           error: agenticError?.message || null,
         },
       },
       enhancements: {
+        queryUnderstanding: queryUnderstandingEnabled ? "enabled" : "bypassed",
         querqy: tier2Rewrite.status,
         rules: tier2Rewrite.rules || [],
         tookMs: tier2Rewrite.tookMs,
-        agentic: agenticError ? "failed" : agenticMode === "active" ? "skipped" : "disabled",
+        agentic: agenticError ? "failed" : inactiveAgenticStatus,
         agenticMode,
         agenticPipeline,
         agenticError: agenticError?.message || null,

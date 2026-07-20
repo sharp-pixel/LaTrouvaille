@@ -46,6 +46,8 @@ npm run dev
 
 The React app calls `http://127.0.0.1:8790/search` and falls back to the same local query matcher if the search API is unavailable.
 
+The Query understanding toggle is enabled by default. Turning it off sends `queryUnderstanding: false`, skips the native LLM pipeline, deterministic intent extraction, Tier-2 rules, and persona scoring, and sends the literal query tokens with OR semantics plus explicit UI controls through lexical OpenSearch or the local outage fallback.
+
 ## Local UBI Capture
 
 Start the local collector:

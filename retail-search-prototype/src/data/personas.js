@@ -70,6 +70,10 @@ export function getPersonaById(personaId) {
   return personas.find((persona) => persona.id === personaId) || defaultPersona;
 }
 
+export function getEffectiveSearchPersona(personaId, queryUnderstandingEnabled = true) {
+  return queryUnderstandingEnabled ? getPersonaById(personaId) : defaultPersona;
+}
+
 export function getPersonaSearchRequestIdentity(personaId) {
   return { personaId: getPersonaById(personaId).id };
 }

@@ -33,6 +33,8 @@ const eventsBody = {
       action_name: { type: "keyword", ignore_above: 100 },
       query_id: { type: "keyword", ignore_above: 100 },
       client_id: { type: "keyword", ignore_above: 256 },
+      persona_id: { type: "keyword", ignore_above: 100 },
+      persona_version: { type: "integer" },
       timestamp: { type: "date" },
       message_type: { type: "keyword", ignore_above: 100 },
       message: { type: "text", fields: { keyword: { type: "keyword", ignore_above: 1024 } } },
@@ -49,6 +51,8 @@ const queriesBody = {
       application: { type: "keyword", ignore_above: 100 },
       query_id: { type: "keyword", ignore_above: 100 },
       client_id: { type: "keyword", ignore_above: 256 },
+      persona_id: { type: "keyword", ignore_above: 100 },
+      persona_version: { type: "integer" },
       timestamp: { type: "date" },
       user_query: { type: "keyword", ignore_above: 1024 },
       query_response_object_ids: { type: "keyword", ignore_above: 256 },
@@ -66,7 +70,16 @@ async function ensureIndex(index, body) {
     await client.indices.create({ index, body });
     return "created";
   }
-  return "exists";
+  await client.indices.putMapping({
+    index,
+    body: {
+      properties: {
+        persona_id: body.mappings.properties.persona_id,
+        persona_version: body.mappings.properties.persona_version,
+      },
+    },
+  });
+  return "updated";
 }
 
 async function main() {

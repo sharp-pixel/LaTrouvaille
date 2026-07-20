@@ -14,14 +14,16 @@ import {
   X,
 } from "lucide-react";
 import { categoryTiles, filterGroups, navItems, popularSearches, products } from "./data/catalog.js";
+import { defaultPersona, getPersonaById, personas } from "./data/personas.js";
 import { createQueryUnderstanding, localSearchProducts } from "./lib/search.js";
 import { getRecentUbiEvents, recordUbiEvent, recordUbiQuery } from "./lib/ubi.js";
 
 const SEARCH_ENDPOINT = import.meta.env.VITE_SEARCH_ENDPOINT || "http://127.0.0.1:8790";
 const BRAND_NAME = "La Trouvaille";
 const DEFAULT_MAX_PRICE = 20000;
+const PERSONA_STORAGE_KEY = "la-trouvaille-demo-persona";
 const SORT_OPTIONS = ["Recommended", "Newest", "Lowest price", "Price drop"];
-const featuredSearches = ["formal watch", "chanel bag", "silk dress", "hermes birkin"];
+const featuredSearches = ["formal watch", "maison bellune bag", "silk dress", "ardenne berenice"];
 const discoveryEdits = [
   {
     title: "Fine watches",
@@ -37,9 +39,9 @@ const discoveryEdits = [
   },
   {
     title: "Investment bags",
-    query: "hermes birkin",
+    query: "ardenne berenice",
     image: "/assets/products/04-black-shoulder-bag.png",
-    meta: "Hermes, Chanel, Celine and daily carry icons",
+    meta: "Ardenne, Maison Bellune, Celenne and daily carry icons",
   },
 ];
 const homeStats = [
@@ -56,8 +58,18 @@ const formatResultCount = (count, relation) => {
   return relation === "gte" ? `${formatted}+` : formatted;
 };
 
+const getInitialPersona = () => {
+  try {
+    return getPersonaById(localStorage.getItem(PERSONA_STORAGE_KEY));
+  } catch {
+    return defaultPersona;
+  }
+};
+
 export function App() {
   const lastQuerySignature = useRef("");
+  const personaReturnFocusRef = useRef(null);
+  const mobileMenuButtonRef = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeQuery, setActiveQuery] = useState("");
@@ -67,8 +79,8 @@ export function App() {
   const [maxPrice, setMaxPrice] = useState(DEFAULT_MAX_PRICE);
   const [favorites, setFavorites] = useState(new Set(["MR-0000001", "MR-0000009"]));
   const [selectedProduct, setSelectedProduct] = useState(null);
-  const [showPreference, setShowPreference] = useState(false);
-  const [preference, setPreference] = useState("Womenswear");
+  const [personaSelectorOpen, setPersonaSelectorOpen] = useState(false);
+  const [activePersona, setActivePersona] = useState(getInitialPersona);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const [ubiQueryId, setUbiQueryId] = useState("");
@@ -151,7 +163,7 @@ export function App() {
   useEffect(() => {
     if (mode !== "results") return;
     if (searchResponse.status === "idle" || searchResponse.status === "loading") return;
-    const signature = JSON.stringify({ activeQuery, filters, maxPrice, sort });
+    const signature = JSON.stringify({ activeQuery, filters, maxPrice, sort, personaId: activePersona.id });
     if (lastQuerySignature.current === signature) return;
     lastQuerySignature.current = signature;
 
@@ -167,15 +179,28 @@ export function App() {
       results: sortedProducts.slice(0, 24),
       filters,
       sort,
+      persona: activePersona,
     });
     setUbiQueryId(queryRecord.query_id);
     setUbiEvents(getRecentUbiEvents().slice(0, 6));
-  }, [activePlan, activeQuery, filters, maxPrice, mode, searchResponse.source, searchResponse.status, searchResponse.tookMs, sort, sortedProducts]);
+  }, [activePersona, activePlan, activeQuery, filters, maxPrice, mode, searchResponse.source, searchResponse.status, searchResponse.tookMs, sort, sortedProducts]);
 
   const trackEvent = (payload) => {
     if (!ubiQueryId) return;
-    recordUbiEvent({ queryId: ubiQueryId, ...payload });
+    recordUbiEvent({ queryId: ubiQueryId, persona: activePersona, ...payload });
     setUbiEvents(getRecentUbiEvents().slice(0, 6));
+  };
+
+  const openPersonaSelector = (returnFocusTarget) => {
+    personaReturnFocusRef.current = returnFocusTarget;
+    setPersonaSelectorOpen(true);
+  };
+
+  const closePersonaSelector = () => {
+    setPersonaSelectorOpen(false);
+    requestAnimationFrame(() => {
+      if (personaReturnFocusRef.current?.isConnected) personaReturnFocusRef.current.focus();
+    });
   };
 
   const toggleFavorite = (id, product, ordinal) => {
@@ -247,6 +272,31 @@ export function App() {
     setMode("results");
   };
 
+  const selectPersona = (nextPersona) => {
+    const previousPersona = activePersona;
+    setActivePersona(nextPersona);
+    closePersonaSelector();
+
+    try {
+      localStorage.setItem(PERSONA_STORAGE_KEY, nextPersona.id);
+    } catch {
+      // Persona persistence is a demo convenience and should not block the shopping flow.
+    }
+
+    if (ubiQueryId && previousPersona.id !== nextPersona.id) {
+      recordUbiEvent({
+        queryId: ubiQueryId,
+        persona: previousPersona,
+        actionName: "persona_select",
+        message: `persona ${previousPersona.id} -> ${nextPersona.id}`,
+        eventAttributes: {
+          persona_selection: { from: previousPersona.id, to: nextPersona.id },
+        },
+      });
+      setUbiEvents(getRecentUbiEvents().slice(0, 6));
+    }
+  };
+
   return (
     <div className="app-shell">
       <Header
@@ -257,6 +307,9 @@ export function App() {
         runSearch={runSearch}
         suggestions={suggestions}
         favoritesCount={favorites.size}
+        persona={activePersona}
+        menuButtonRef={mobileMenuButtonRef}
+        onOpenPersona={openPersonaSelector}
         setMode={setMode}
         setMobileNavOpen={setMobileNavOpen}
       />
@@ -296,15 +349,22 @@ export function App() {
         />
       )}
 
-      {showPreference && (
-        <PreferenceModal
-          preference={preference}
-          setPreference={setPreference}
-          onClose={() => setShowPreference(false)}
+      {personaSelectorOpen && (
+        <PersonaModal
+          persona={activePersona}
+          onSelect={selectPersona}
+          onClose={closePersonaSelector}
         />
       )}
 
-      {mobileNavOpen && <MobileNav onClose={() => setMobileNavOpen(false)} setMode={setMode} />}
+      {mobileNavOpen && (
+        <MobileNav
+          persona={activePersona}
+          onOpenPersona={() => openPersonaSelector(mobileMenuButtonRef.current)}
+          onClose={() => setMobileNavOpen(false)}
+          setMode={setMode}
+        />
+      )}
 
       {filterDrawerOpen && (
         <div className="drawer-backdrop" onClick={() => setFilterDrawerOpen(false)}>
@@ -350,6 +410,9 @@ function Header({
   runSearch,
   suggestions,
   favoritesCount,
+  persona,
+  menuButtonRef,
+  onOpenPersona,
   setMode,
   setMobileNavOpen,
 }) {
@@ -359,7 +422,13 @@ function Header({
         Ready to sell? Enjoy zero selling fees on your first listing.
       </a>
       <div className="header-main">
-        <button className="menu-button" type="button" aria-label="Open menu" onClick={() => setMobileNavOpen(true)}>
+        <button
+          ref={menuButtonRef}
+          className="menu-button"
+          type="button"
+          aria-label="Open menu"
+          onClick={() => setMobileNavOpen(true)}
+        >
           <Menu size={22} />
         </button>
         <button className="search-trigger" type="button" onClick={() => setSearchOpen(true)}>
@@ -373,7 +442,17 @@ function Header({
           <a className="sell-link" href="#seller">
             Sell an item
           </a>
-          <button type="button">Sign in</button>
+          <button
+            className="persona-trigger"
+            type="button"
+            aria-haspopup="dialog"
+            aria-label={`Choose demo persona. Current persona: ${persona.name}`}
+            onClick={(event) => onOpenPersona(event.currentTarget)}
+          >
+            <img className="persona-trigger-avatar" src={persona.image} alt="" />
+            <span>{persona.id === "anonymous" ? "Sign in" : persona.shortName}</span>
+            <ChevronDown size={14} />
+          </button>
           <button type="button">Sign up</button>
           <button className="icon-button" type="button" aria-label="Notifications">
             <Bell size={18} />
@@ -431,7 +510,7 @@ function Header({
             <section>
               <h3>Brands</h3>
               <ul>
-                {["Cartier", "Chanel", "Gucci", "Saint Laurent"].map((brand) => (
+                {["Maison Aurelle", "Maison Bellune", "Casa Gilda", "Laurent Velin"].map((brand) => (
                   <li key={brand}>
                     <button type="button" onClick={() => runSearch(brand)}>
                       <span>{brand}</span>
@@ -852,32 +931,145 @@ function ProductCard({ product, favorite, toggleFavorite, onProduct, ordinal = 0
   );
 }
 
-function PreferenceModal({ preference, setPreference, onClose }) {
+function PersonaModal({ persona, onSelect, onClose }) {
+  const [draftPersonaId, setDraftPersonaId] = useState(persona.id);
+  const draftPersona = getPersonaById(draftPersonaId);
+  const dialogRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = [...dialog.querySelectorAll("button:not([disabled]), input:not([disabled])")];
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const movePersonaSelection = (event, currentIndex) => {
+    const directions = {
+      ArrowDown: 1,
+      ArrowRight: 1,
+      ArrowUp: -1,
+      ArrowLeft: -1,
+    };
+    if (!directions[event.key]) return;
+    event.preventDefault();
+    const nextIndex = (currentIndex + directions[event.key] + personas.length) % personas.length;
+    const nextPersona = personas[nextIndex];
+    setDraftPersonaId(nextPersona.id);
+    requestAnimationFrame(() => {
+      dialogRef.current?.querySelector(`input[value="${nextPersona.id}"]`)?.focus();
+    });
+  };
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <section className="preference-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
-        <h2>Select shopping preference</h2>
-        <p>Personalize your homepage to get started.</p>
-        {["Womenswear", "Menswear"].map((option) => (
+      <section
+        ref={dialogRef}
+        className="persona-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="persona-modal-title"
+      >
+        <div className="persona-modal-head">
+          <div>
+            <p className="eyebrow">Demo identity</p>
+            <h2 id="persona-modal-title">Who are you shopping as?</h2>
+            <p>Choose a fictional profile to give searches and interactions a clear shopper context.</p>
+          </div>
           <button
+            className="icon-button"
             type="button"
-            key={option}
-            className={`preference-option ${preference === option ? "selected" : ""}`}
-            onClick={() => setPreference(option)}
+            aria-label="Close persona selector"
+            onClick={onClose}
+            autoFocus
           >
-            <span>{option}</span>
-            {preference === option && <Check size={18} />}
+            <X size={18} />
           </button>
-        ))}
-        <button className="primary-button" type="button" onClick={onClose}>
-          Continue
-        </button>
+        </div>
+
+        <div className="persona-options" role="radiogroup" aria-label="Demo personas">
+          {personas.map((option, index) => {
+            const selected = draftPersonaId === option.id;
+            return (
+              <label
+                key={option.id}
+                className={`persona-option ${selected ? "selected" : ""}`}
+              >
+                <input
+                  type="radio"
+                  name="demo-persona"
+                  value={option.id}
+                  checked={selected}
+                  onChange={() => setDraftPersonaId(option.id)}
+                  onKeyDown={(event) => movePersonaSelection(event, index)}
+                />
+                <span className="persona-option-head">
+                  <span className="persona-avatar" aria-hidden="true">
+                    <img src={option.image} alt="" />
+                  </span>
+                  <span className="persona-identity">
+                    <strong>{option.name}</strong>
+                    <small>{option.archetype}</small>
+                    <span>{option.demographics}</span>
+                  </span>
+                  <span className="persona-check" aria-hidden="true">
+                    {selected && <Check size={17} />}
+                  </span>
+                </span>
+                <span className="persona-detail">
+                  <strong>Background</strong>
+                  <span>{option.background}</span>
+                </span>
+                <span className="persona-detail">
+                  <strong>Mental model</strong>
+                  <span>{option.mentalModel}</span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+
+        <div className="persona-modal-footer">
+          <p>
+            <strong>{draftPersona.archetype}</strong>
+            Anonymous keeps the demo unprofiled; named personas are included in UBI records.
+          </p>
+          <button className="primary-button" type="button" onClick={() => onSelect(draftPersona)}>
+            Continue as {draftPersona.shortName}
+          </button>
+        </div>
       </section>
     </div>
   );
 }
 
-function MobileNav({ onClose, setMode }) {
+function MobileNav({ persona, onOpenPersona, onClose, setMode }) {
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="mobile-nav" onClick={(event) => event.stopPropagation()}>
@@ -895,6 +1087,20 @@ function MobileNav({ onClose, setMode }) {
           }}
         >
           Home
+        </button>
+        <button
+          className="mobile-persona-trigger"
+          type="button"
+          onClick={() => {
+            onClose();
+            onOpenPersona();
+          }}
+        >
+          <span>
+            <small>Demo persona</small>
+            <strong>{persona.id === "anonymous" ? "Sign in" : persona.name}</strong>
+          </span>
+          <ChevronRight size={16} />
         </button>
         {navItems.map((item) => (
           <a href={`#${item}`} key={item} onClick={onClose}>

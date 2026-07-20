@@ -32,7 +32,7 @@ const GENERIC_TERMS = new Set([
 ]);
 
 const CATEGORY_TERMS = [
-  { category: "Watches", terms: ["watch", "watches", "tank", "panthere", "reverso", "oyster"] },
+  { category: "Watches", terms: ["watch", "watches", "cadre", "feline", "pivot", "evermark"] },
   { category: "Jewellery", terms: ["jewellery", "jewelry", "bracelet", "bracelets", "earring", "earrings", "ring", "rings", "diamond", "gold"] },
   { category: "Bags", terms: ["bag", "bags", "flap", "tote", "crossbody", "handbag", "shoulder"] },
   { category: "Dresses", terms: ["dress", "dresses", "maxi", "mini", "slip"] },
@@ -54,7 +54,7 @@ const PHRASE_INTENTS = [
 const CATEGORY_TOKEN_SET = new Set(CATEGORY_TERMS.flatMap(({ terms }) => terms));
 
 const MATERIAL_TERMS = [
-  { material: "Leather", terms: ["leather", "calfskin", "togo", "epsom"] },
+  { material: "Leather", terms: ["leather", "calfskin", "taurillon", "grained"] },
   { material: "Silk", terms: ["silk"] },
   { material: "Wool", terms: ["wool", "tweed"] },
   { material: "Steel", terms: ["steel"] },

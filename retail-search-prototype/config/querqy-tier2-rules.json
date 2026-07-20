@@ -8,31 +8,31 @@
     "boosts": [
       { "field": "reasons", "phrase": "Dress watch", "weight": 16 },
       { "field": "title", "phrase": "dress watch", "weight": 14 },
-      { "field": "title", "phrase": "Calatrava", "weight": 12 },
-      { "field": "title", "phrase": "Patrimony", "weight": 12 },
-      { "field": "title", "phrase": "Classique", "weight": 10 },
-      { "field": "title", "phrase": "De Ville", "weight": 8 },
-      { "field": "title", "phrase": "Reverso", "weight": 8 }
+      { "field": "title", "phrase": "Celestine", "weight": 12 },
+      { "field": "title", "phrase": "Heritage", "weight": 12 },
+      { "field": "title", "phrase": "Tradition", "weight": 10 },
+      { "field": "title", "phrase": "Belleville", "weight": 8 },
+      { "field": "title", "phrase": "Pivot", "weight": 8 }
     ],
     "bury": [{ "field": "category", "value": "Dresses", "weight": 0.2 }]
   },
   {
-    "id": "cartier-tank-watch",
-    "all": ["cartier", "tank"],
-    "rewrite": "cartier tank francaise steel watch",
-    "synonyms": ["tank francaise", "cartier tank", "dress watch"],
+    "id": "aurelle-cadre-watch",
+    "all": ["aurelle", "cadre"],
+    "rewrite": "maison aurelle cadre francais steel watch",
+    "synonyms": ["cadre francais", "aurelle cadre", "dress watch"],
     "filters": [{ "field": "category", "values": ["Watches"] }],
     "boosts": [
-      { "field": "title", "phrase": "Tank Francaise", "weight": 12 },
-      { "field": "brand", "phrase": "CARTIER", "weight": 8 }
+      { "field": "title", "phrase": "Cadre Francais", "weight": 12 },
+      { "field": "brand", "phrase": "MAISON AURELLE", "weight": 8 }
     ],
     "bury": [{ "field": "condition", "value": "Fair condition", "weight": 0.35 }]
   },
   {
-    "id": "chanel-bag",
-    "all": ["chanel", "bag"],
-    "rewrite": "chanel quilted leather flap bag",
-    "synonyms": ["flap bag", "boy bag", "quilted bag"],
+    "id": "bellune-bag",
+    "all": ["bellune", "bag"],
+    "rewrite": "maison bellune quilted leather flap bag",
+    "synonyms": ["flap bag", "page bag", "quilted bag"],
     "filters": [{ "field": "category", "values": ["Bags"] }],
     "boosts": [
       { "field": "title", "phrase": "quilted", "weight": 8 },
@@ -51,26 +51,26 @@
     "boosts": [{ "field": "title", "phrase": "Silk slip dress", "weight": 8 }]
   },
   {
-    "id": "hermes-birkin",
-    "all": ["hermes", "birkin"],
-    "rewrite": "hermes birkin 30 togo leather bag",
-    "synonyms": ["birkin 30", "togo leather", "investment bag"],
+    "id": "ardenne-berenice",
+    "all": ["ardenne", "berenice"],
+    "rewrite": "ardenne berenice 30 taurillon leather bag",
+    "synonyms": ["berenice 30", "taurillon leather", "investment bag"],
     "filters": [{ "field": "category", "values": ["Bags"] }],
     "boosts": [
-      { "field": "title", "phrase": "Birkin", "weight": 16 },
+      { "field": "title", "phrase": "Berenice", "weight": 16 },
       { "field": "material", "phrase": "Leather", "weight": 4 }
     ],
     "bury": [{ "field": "condition", "value": "Fair condition", "weight": 0.5 }]
   },
   {
-    "id": "patek-calatrava",
-    "all": ["patek", "calatrava"],
-    "rewrite": "patek philippe calatrava manual wind watch",
-    "synonyms": ["dress watch", "manual wind", "calatrava"],
+    "id": "montreval-celestine",
+    "all": ["montreval", "celestine"],
+    "rewrite": "montreval geneve celestine manual wind watch",
+    "synonyms": ["dress watch", "manual wind", "celestine"],
     "filters": [{ "field": "category", "values": ["Watches"] }],
     "boosts": [
-      { "field": "brand", "phrase": "PATEK PHILIPPE", "weight": 12 },
-      { "field": "title", "phrase": "Calatrava", "weight": 16 }
+      { "field": "brand", "phrase": "MONTREVAL GENEVE", "weight": 12 },
+      { "field": "title", "phrase": "Celestine", "weight": 16 }
     ]
   },
   {

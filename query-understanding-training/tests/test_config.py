@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from query_understanding.config import TrainingConfig
+from query_understanding.config import TrainingConfig, load_training_config
 
 
 def test_config_resolves_paths_and_pins_model(config: TrainingConfig) -> None:
@@ -36,3 +36,15 @@ def test_lora_regex_targets_text_backbone_only(config: TrainingConfig) -> None:
 def test_fixture_paths_exist(config: TrainingConfig) -> None:
     paths: tuple[Path, ...] = (config.data.train_file, config.data.eval_file, config.data.policy_file)
     assert all(path.exists() for path in paths)
+
+
+def test_macos_config_uses_native_mps_compatible_lora(project_root: Path) -> None:
+    config = load_training_config(project_root / "configs" / "lora-macos.yaml")
+
+    assert config.quantization.load_in_4bit is False
+    assert config.quantization.compute_dtype == "float16"
+    assert config.trainer.optim == "adamw_torch"
+    assert config.trainer.bf16 is False
+    assert config.trainer.fp16 is True
+    assert config.trainer.tf32 is False
+    assert config.trainer.output_dir.name == "lora-macos-v1"

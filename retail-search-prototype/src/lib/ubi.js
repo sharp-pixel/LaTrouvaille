@@ -40,11 +40,23 @@ export function getRecentUbiEvents() {
   return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
 }
 
-export function recordUbiQuery({ userQuery, rewrittenQuery, results, queryPlan, filters, sort }) {
+function personaAttributes(persona) {
+  if (!persona) return undefined;
+  return {
+    id: persona.id,
+    version: persona.version,
+    name: persona.name,
+    archetype: persona.archetype,
+  };
+}
+
+export function recordUbiQuery({ userQuery, rewrittenQuery, results, queryPlan, filters, sort, persona }) {
   const record = {
     application: APPLICATION,
     query_id: uuid(),
     client_id: getClientId(),
+    persona_id: persona?.id,
+    persona_version: persona?.version,
     timestamp: new Date().toISOString(),
     user_query: userQuery,
     query_response_object_ids: results.map((item) => item.item_id),
@@ -54,6 +66,7 @@ export function recordUbiQuery({ userQuery, rewrittenQuery, results, queryPlan, 
       filters,
       sort,
       result_count: results.length,
+      persona: personaAttributes(persona),
     },
   };
   appendLocal({ type: "query", ...record });
@@ -68,6 +81,7 @@ export function recordUbiEvent({
   message,
   object,
   ordinal,
+  persona,
   eventAttributes = {},
 }) {
   const record = {
@@ -75,11 +89,14 @@ export function recordUbiEvent({
     action_name: actionName,
     query_id: queryId,
     client_id: getClientId(),
+    persona_id: persona?.id,
+    persona_version: persona?.version,
     timestamp: new Date().toISOString(),
     message_type: messageType,
     message: message || actionName,
     event_attributes: {
       ...eventAttributes,
+      persona: personaAttributes(persona),
       position: typeof ordinal === "number" ? { ordinal } : undefined,
       object: object
         ? {

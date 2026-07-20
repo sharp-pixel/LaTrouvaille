@@ -1,4 +1,4 @@
-"""QLoRA training entrypoint for the text-only query compiler task."""
+"""LoRA/QLoRA training entrypoint for the text-only query compiler task."""
 
 from __future__ import annotations
 
@@ -39,16 +39,33 @@ def environment_report(include_training_stack: bool = False) -> dict[str, object
         return report
 
     cuda_available = torch.cuda.is_available()
+    mps_available = bool(
+        getattr(torch.backends, "mps", None)
+        and torch.backends.mps.is_built()
+        and torch.backends.mps.is_available()
+    )
+    backend = "cuda" if cuda_available else "mps" if mps_available else "cpu"
+    required_packages = ("transformers", "trl", "peft", "datasets", "accelerate")
+    stack_available = all(packages.get(package) != "not-installed" for package in required_packages)
+    bf16_supported = bool(cuda_available and torch.cuda.is_bf16_supported())
     report.update(
         {
+            "backend": backend,
             "cuda_available": cuda_available,
+            "mps_available": mps_available,
             "torch_cuda": torch.version.cuda,
-            "bf16_supported": bool(cuda_available and torch.cuda.is_bf16_supported()),
-            "gpu": torch.cuda.get_device_name(0) if cuda_available else None,
+            "bf16_supported": bf16_supported,
+            "device": (
+                torch.cuda.get_device_name(0) if cuda_available else "Apple Silicon GPU" if mps_available else None
+            ),
         }
     )
     report["ready"] = bool(
-        cuda_available and report["bf16_supported"] and packages.get("bitsandbytes") != "not-installed"
+        stack_available
+        and (
+            (cuda_available and bf16_supported and packages.get("bitsandbytes") != "not-installed")
+            or mps_available
+        )
     )
     return report
 
@@ -84,11 +101,18 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
     train_dataset = Dataset.from_list(tokenized_train)
     eval_dataset = Dataset.from_list(tokenized_eval)
 
-    quantization_config = BitsAndBytesConfig(
-        load_in_4bit=config.quantization.load_in_4bit,
-        bnb_4bit_quant_type=config.quantization.quant_type,
-        bnb_4bit_use_double_quant=config.quantization.use_double_quant,
-        bnb_4bit_compute_dtype=_torch_dtype(config.quantization.compute_dtype, torch),
+    backend = str(report["backend"])
+    if config.quantization.load_in_4bit and backend != "cuda":
+        raise RuntimeError("4-bit bitsandbytes quantization requires CUDA; use configs/lora-macos.yaml on macOS")
+    quantization_config = (
+        BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type=config.quantization.quant_type,
+            bnb_4bit_use_double_quant=config.quantization.use_double_quant,
+            bnb_4bit_compute_dtype=_torch_dtype(config.quantization.compute_dtype, torch),
+        )
+        if config.quantization.load_in_4bit
+        else None
     )
     peft_config = LoraConfig(
         r=config.lora.rank,
@@ -102,10 +126,10 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
         output_dir=str(config.trainer.output_dir),
         model_init_kwargs={
             "revision": config.model.revision,
-            "dtype": torch.bfloat16,
+            "dtype": _torch_dtype(config.quantization.compute_dtype, torch),
             "trust_remote_code": config.model.trust_remote_code,
             "use_cache": False,
-            "device_map": {"": 0},
+            "device_map": {"": 0 if backend == "cuda" else backend},
         },
         per_device_train_batch_size=config.trainer.per_device_train_batch_size,
         per_device_eval_batch_size=config.trainer.per_device_eval_batch_size,
@@ -126,6 +150,7 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
         seed=config.trainer.seed,
         data_seed=config.trainer.seed,
         bf16=config.trainer.bf16,
+        fp16=config.trainer.fp16,
         tf32=config.trainer.tf32,
         packing=config.trainer.packing,
         max_length=None,

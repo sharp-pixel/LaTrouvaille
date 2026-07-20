@@ -8,22 +8,23 @@ data:
   eval_file: ../data/eval.jsonl
   policy_file: policy-prototype-v1.yaml
 
+# bitsandbytes 4-bit quantization is CUDA-only. Apple Silicon uses native
+# float16 MPS tensors and applies LoRA adapters to the text backbone.
 quantization:
-  load_in_4bit: true
+  load_in_4bit: false
   quant_type: nf4
-  use_double_quant: true
-  compute_dtype: bfloat16
+  use_double_quant: false
+  compute_dtype: float16
 
 lora:
   rank: 16
   alpha: 32
   dropout: 0.05
-  # The checkpoint is multimodal. This regex deliberately excludes the vision tower.
   target_modules_regex: '^language_model\.model\.layers\.\d+\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))$'
 
 trainer:
-  output_dir: ../artifacts/qlora-v1
-  sequence_length: 2048
+  output_dir: ../artifacts/lora-macos-v1
+  sequence_length: 1024
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1
   gradient_accumulation_steps: 16
@@ -33,14 +34,14 @@ trainer:
   warmup_ratio: 0.03
   num_train_epochs: 2
   max_grad_norm: 0.3
-  optim: paged_adamw_8bit
+  optim: adamw_torch
   logging_steps: 10
   save_steps: 250
   eval_steps: 250
   save_total_limit: 2
   seed: 42
-  bf16: true
-  fp16: false
-  tf32: true
+  bf16: false
+  fp16: true
+  tf32: false
   packing: false
   report_to: []

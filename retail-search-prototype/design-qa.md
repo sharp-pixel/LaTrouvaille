@@ -10,7 +10,7 @@
 - Mobile: 390 x 844.
 
 **State**
-- Default prototype state: search results for `cartier tank under 5000`.
+- Default prototype state: search results for `maison aurelle cadre under 5000`.
 - Captured interaction states: search overlay, product detail modal, mobile filter drawer.
 
 **Findings**

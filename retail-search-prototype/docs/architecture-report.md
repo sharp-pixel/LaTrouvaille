@@ -163,11 +163,11 @@ The prototype includes a local Querqy-style service rather than a real Querqy de
 Current rules live in `config/querqy-tier2-rules.json`. Example rules include:
 
 - `dress-watch`
-- `cartier-tank-watch`
-- `chanel-bag`
+- `aurelle-cadre-watch`
+- `bellune-bag`
 - `silk-dress`
-- `hermes-birkin`
-- `patek-calatrava`
+- `ardenne-berenice`
+- `montreval-celestine`
 - `leather-boots`
 
 Production recommendation: replace the local service with standalone Querqy/Querqy Unplugged behind the same API boundary. Keep the Search API fail-open behavior.

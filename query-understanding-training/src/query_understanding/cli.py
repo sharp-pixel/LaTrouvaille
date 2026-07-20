@@ -60,7 +60,9 @@ def export_schema(
 
 @app.command()
 def doctor(
-    training: Annotated[bool, typer.Option("--training", help="Inspect the optional GPU training stack.")] = False,
+    training: Annotated[
+        bool, typer.Option("--training", help="Inspect the optional CUDA or MPS training stack.")
+    ] = False,
 ) -> None:
     """Report whether the local environment can validate data or run QLoRA."""
     require_supported_python()
@@ -96,7 +98,7 @@ def train(
                     "dry_run": True,
                     "config": loaded.model_dump(mode="json"),
                     "datasets": [_report_dict(report) for report in reports],
-                    "next": "rerun with --execute on the RTX 5090 host",
+                    "next": f"rerun with --execute --config {config} on a compatible CUDA or Apple Silicon host",
                 },
                 indent=2,
                 sort_keys=True,

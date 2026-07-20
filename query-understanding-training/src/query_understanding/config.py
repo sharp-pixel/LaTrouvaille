@@ -58,6 +58,7 @@ class TrainerSettings(ConfigModel):
     save_total_limit: int = Field(default=2, ge=1)
     seed: int = 42
     bf16: bool = True
+    fp16: bool = False
     tf32: bool = True
     packing: bool = False
     report_to: list[str] = Field(default_factory=list)

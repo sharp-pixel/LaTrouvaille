@@ -257,6 +257,7 @@ Production direction:
 - Run React as a static app or edge-served frontend.
 - Run the Search API as a horizontally scalable stateless service.
 - Run OpenSearch as a managed or clustered service with multiple shards/replicas and index lifecycle procedures.
+- Optionally run the pinned text-only Ministral planner on a SageMaker `ml.g6.2xlarge` real-time endpoint. OpenSearch invokes it through a least-privilege SigV4 connector; the deterministic lexical query remains the runtime fail-open path.
 - Run Querqy/rewriter as a separate Tier-2 service with short timeouts and circuit breakers.
 - Run UBI ingestion as a separate async pipeline with buffering.
 - Keep Dashboards and Search Relevance Workbench off the serving path.

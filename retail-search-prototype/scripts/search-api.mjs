@@ -33,7 +33,7 @@ const configuredAgenticTimeoutMs = Number(process.env.OPENSEARCH_AGENTIC_SEARCH_
 const agenticTimeoutMs =
   Number.isFinite(configuredAgenticTimeoutMs) && configuredAgenticTimeoutMs > 0
     ? Math.trunc(configuredAgenticTimeoutMs)
-    : 15000;
+    : 30000;
 
 const client = new Client({
   node: process.env.OPENSEARCH_URL || "http://127.0.0.1:9200",

@@ -1,15 +1,27 @@
 import { Client } from "@opensearch-project/opensearch";
 import { readFileSync } from "node:fs";
 import { AGENTIC_FALLBACK_QUERY, selectAvailableModel } from "../src/lib/agentic-search.js";
+import {
+  buildAgenticModelConnector,
+  loadPersistentSageMakerConnectorCredentials,
+  normalizeAgenticModelProvider,
+  redactConnectorCredential,
+  selectConfiguredSageMakerModel,
+} from "../src/lib/agentic-model-provider.js";
 
 const node = process.env.OPENSEARCH_URL || "http://127.0.0.1:9200";
 const pipelineId = process.env.OPENSEARCH_AGENTIC_SEARCH_PIPELINE || "secondhand-agentic-search";
 const providedModelId = process.env.OPENSEARCH_AGENTIC_MODEL_ID || "";
 const fineTunedModel = process.env.AGENTIC_FINE_TUNED_MODEL || "psg-agentic-query-planner-v3";
 const baseModel = process.env.AGENTIC_BASE_MODEL || process.env.MISTRAL_MODEL || "ministral-3-8b-instruct-2512";
+const provider = normalizeAgenticModelProvider(process.env.AGENTIC_MODEL_PROVIDER || "openai");
 const discoveryBaseUrl = (process.env.AGENTIC_MODEL_DISCOVERY_BASE_URL || "http://127.0.0.1:8000/v1").replace(/\/$/, "");
 const connectorBaseUrl = (process.env.AGENTIC_MODEL_BASE_URL || "http://host.docker.internal:8000/v1").replace(/\/$/, "");
 const modelApiKey = process.env.AGENTIC_MODEL_API_KEY || process.env.MISTRAL_API_KEY || "local";
+const sagemakerRegion =
+  process.env.SAGEMAKER_REGION || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "eu-west-1";
+const sagemakerEndpoint = process.env.SAGEMAKER_MINISTRAL_ENDPOINT || "la-trouvaille-ministral";
+const sagemakerModel = process.env.SAGEMAKER_MINISTRAL_MODEL || baseModel;
 const structuredOutput = process.env.AGENTIC_STRUCTURED_OUTPUT !== "false";
 const dryRun = process.argv.includes("--dry-run");
 const queryPlannerSystemPrompt = readFileSync(
@@ -69,7 +81,11 @@ async function discoverModel() {
   return selectAvailableModel({ availableModelIds, fineTunedModel, baseModel });
 }
 
-function modelRegistration(selectedModel) {
+function loadSageMakerCredentials() {
+  return loadPersistentSageMakerConnectorCredentials();
+}
+
+function modelRegistration(selectedModel, sagemakerCredentials) {
   const requestBody = {
     model: "${parameters.model}",
     messages: [
@@ -272,26 +288,18 @@ function modelRegistration(selectedModel) {
     name: `La Trouvaille agentic planner: ${selectedModel.model}`,
     function_name: "remote",
     description: `Native agentic-search planner using the ${selectedModel.source} retail query model`,
-    connector: {
-      name: `OpenAI-compatible connector: ${selectedModel.model}`,
-      description: "Connector to the locally served fine-tuned or base Ministral model",
-      version: 1,
-      protocol: "http",
-      parameters: { model: selectedModel.model },
-      credential: { api_key: modelApiKey },
-      actions: [
-        {
-          action_type: "predict",
-          method: "POST",
-          url: `${connectorBaseUrl}/chat/completions`,
-          headers: {
-            Authorization: "Bearer ${credential.api_key}",
-            "content-type": "application/json",
-          },
-          request_body: JSON.stringify(requestBody),
-        },
-      ],
-    },
+    connector: buildAgenticModelConnector({
+      provider,
+      selectedModel,
+      requestBody,
+      connectorBaseUrl,
+      modelApiKey,
+      sagemaker: {
+        region: sagemakerRegion,
+        endpointName: sagemakerEndpoint,
+        credentials: sagemakerCredentials,
+      },
+    }),
   };
 }
 
@@ -323,18 +331,40 @@ function pipelineRegistration(agentId) {
 }
 
 async function main() {
-  const selectedModel = providedModelId ? { model: "pre-registered", source: "provided" } : await discoverModel();
+  const selectedModel = providedModelId
+    ? { model: "pre-registered", source: "provided" }
+    : provider === "sagemaker"
+      ? selectConfiguredSageMakerModel({
+          configuredModel: sagemakerModel,
+          fineTunedModel,
+          baseModel,
+        })
+      : await discoverModel();
   if (dryRun) {
-    const registrationPreview = providedModelId ? null : modelRegistration(selectedModel);
-    if (registrationPreview) registrationPreview.connector.credential.api_key = "<redacted>";
+    const previewCredentials = {
+      accessKeyId: "<redacted>",
+      secretAccessKey: "<redacted>",
+      sessionToken: "",
+    };
+    const registrationPreview = providedModelId
+      ? null
+      : modelRegistration(selectedModel, previewCredentials);
+    if (registrationPreview) {
+      registrationPreview.connector = redactConnectorCredential(registrationPreview.connector);
+    }
     console.log(
       JSON.stringify(
         {
           node,
           pipelineId,
+          provider,
           selectedModel,
           providedModelId: providedModelId || null,
-          connectorBaseUrl,
+          connectorBaseUrl: provider === "openai" ? connectorBaseUrl : null,
+          sagemaker:
+            provider === "sagemaker"
+              ? { region: sagemakerRegion, endpointName: sagemakerEndpoint }
+              : null,
           structuredOutput,
           modelRegistration: registrationPreview,
           agentRegistration: agentRegistration(providedModelId || "<registered-model-id>"),
@@ -349,16 +379,25 @@ async function main() {
 
   let modelId = providedModelId;
   if (!modelId) {
-    const connectorUrl = new URL(connectorBaseUrl);
-    const escapedOrigin = connectorUrl.origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const connectorOrigin =
+      provider === "sagemaker"
+        ? `https://runtime.sagemaker.${sagemakerRegion}.amazonaws.com`
+        : new URL(connectorBaseUrl).origin;
+    const escapedOrigin = connectorOrigin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     await request("PUT", "/_cluster/settings", {
       persistent: {
         "plugins.ml_commons.trusted_connector_endpoints_regex": [`^${escapedOrigin}/.*$`],
-        "plugins.ml_commons.connector.private_ip_enabled": connectorUrl.protocol === "http:",
+        "plugins.ml_commons.connector.private_ip_enabled":
+          provider === "openai" && new URL(connectorBaseUrl).protocol === "http:",
       },
     });
 
-    const registration = await request("POST", "/_plugins/_ml/models/_register", modelRegistration(selectedModel));
+    const sagemakerCredentials = provider === "sagemaker" ? loadSageMakerCredentials() : undefined;
+    const registration = await request(
+      "POST",
+      "/_plugins/_ml/models/_register",
+      modelRegistration(selectedModel, sagemakerCredentials),
+    );
     modelId = registration.model_id || (registration.task_id && (await waitForModel(registration.task_id)));
     if (!modelId) throw new Error(`Model registration did not return a model ID: ${JSON.stringify(registration)}`);
   }

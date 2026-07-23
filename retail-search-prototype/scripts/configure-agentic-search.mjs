@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { AGENTIC_FALLBACK_QUERY, selectAvailableModel } from "../src/lib/agentic-search.js";
 import {
   buildAgenticModelConnector,
+  buildTrustedConnectorClusterSettings,
   loadPersistentSageMakerConnectorCredentials,
   normalizeAgenticModelProvider,
   redactConnectorCredential,
+  rollbackAgenticRegistration,
   selectConfiguredSageMakerModel,
 } from "../src/lib/agentic-model-provider.js";
 
@@ -378,37 +380,72 @@ async function main() {
   }
 
   let modelId = providedModelId;
-  if (!modelId) {
-    const connectorOrigin =
-      provider === "sagemaker"
-        ? `https://runtime.sagemaker.${sagemakerRegion}.amazonaws.com`
-        : new URL(connectorBaseUrl).origin;
-    const escapedOrigin = connectorOrigin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    await request("PUT", "/_cluster/settings", {
-      persistent: {
-        "plugins.ml_commons.trusted_connector_endpoints_regex": [`^${escapedOrigin}/.*$`],
-        "plugins.ml_commons.connector.private_ip_enabled":
-          provider === "openai" && new URL(connectorBaseUrl).protocol === "http:",
-      },
-    });
-
-    const sagemakerCredentials = provider === "sagemaker" ? loadSageMakerCredentials() : undefined;
-    const registration = await request(
+  let registeredModelId = null;
+  let registeredAgentId = null;
+  try {
+    if (!modelId) {
+      const sagemakerCredentials =
+        provider === "sagemaker" ? loadSageMakerCredentials() : undefined;
+      const connectorOrigin =
+        provider === "sagemaker"
+          ? `https://runtime.sagemaker.${sagemakerRegion}.amazonaws.com`
+          : new URL(connectorBaseUrl).origin;
+      const currentClusterSettings = await request(
+        "GET",
+        "/_cluster/settings?flat_settings=true&include_defaults=false",
+      );
+      await request("PUT", "/_cluster/settings", {
+        persistent: buildTrustedConnectorClusterSettings({
+          provider,
+          connectorOrigin,
+          currentPersistent: currentClusterSettings.persistent,
+        }),
+      });
+      const registration = await request(
+        "POST",
+        "/_plugins/_ml/models/_register",
+        modelRegistration(selectedModel, sagemakerCredentials),
+      );
+      modelId =
+        registration.model_id ||
+        (registration.task_id && (await waitForModel(registration.task_id)));
+      if (!modelId) {
+        throw new Error(
+          `Model registration did not return a model ID: ${JSON.stringify(registration)}`,
+        );
+      }
+      registeredModelId = modelId;
+    }
+    const agent = await request(
       "POST",
-      "/_plugins/_ml/models/_register",
-      modelRegistration(selectedModel, sagemakerCredentials),
+      "/_plugins/_ml/agents/_register",
+      agentRegistration(modelId),
     );
-    modelId = registration.model_id || (registration.task_id && (await waitForModel(registration.task_id)));
-    if (!modelId) throw new Error(`Model registration did not return a model ID: ${JSON.stringify(registration)}`);
+    if (!agent.agent_id) {
+      throw new Error(`Agent registration did not return an agent ID: ${JSON.stringify(agent)}`);
+    }
+    registeredAgentId = agent.agent_id;
+    await request(
+      "PUT",
+      `/_search/pipeline/${encodeURIComponent(pipelineId)}`,
+      pipelineRegistration(agent.agent_id),
+    );
+    console.log(`Configured native Agentic Search pipeline ${pipelineId}.`);
+    console.log(
+      `Planner model: ${selectedModel.model} (${selectedModel.source}); OpenSearch model ID: ${modelId}`,
+    );
+    console.log(`Flow agent ID: ${agent.agent_id}`);
+  } catch (error) {
+    const rollbackErrors = await rollbackAgenticRegistration({
+      request,
+      registeredModelId,
+      registeredAgentId,
+    });
+    const suffix = rollbackErrors.length
+      ? ` Registration rollback also failed: ${rollbackErrors.join("; ")}`
+      : "";
+    throw new Error(`${error.message || String(error)}${suffix}`, { cause: error });
   }
-
-  const agent = await request("POST", "/_plugins/_ml/agents/_register", agentRegistration(modelId));
-  if (!agent.agent_id) throw new Error(`Agent registration did not return an agent ID: ${JSON.stringify(agent)}`);
-  await request("PUT", `/_search/pipeline/${encodeURIComponent(pipelineId)}`, pipelineRegistration(agent.agent_id));
-
-  console.log(`Configured native Agentic Search pipeline ${pipelineId}.`);
-  console.log(`Planner model: ${selectedModel.model} (${selectedModel.source}); OpenSearch model ID: ${modelId}`);
-  console.log(`Flow agent ID: ${agent.agent_id}`);
 }
 
 main().catch((error) => {

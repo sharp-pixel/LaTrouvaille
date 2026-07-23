@@ -31,6 +31,10 @@ function requiredEnvironmentValue(value, label, maxLength = 1024) {
   return value;
 }
 
+export function isMissingEndpointError(stderr) {
+  return /Could not find endpoint/i.test(String(stderr));
+}
+
 function awsJson(args, { allowMissing = false } = {}) {
   try {
     const output = execFileSync("aws", [...args, "--output", "json"], {
@@ -40,10 +44,7 @@ function awsJson(args, { allowMissing = false } = {}) {
     return output.trim() ? JSON.parse(output) : {};
   } catch (error) {
     const stderr = String(error.stderr || "").trim();
-    if (
-      allowMissing &&
-      /Could not find endpoint|ValidationException[\s\S]*endpoint/i.test(stderr)
-    ) {
+    if (allowMissing && isMissingEndpointError(stderr)) {
       return null;
     }
     throw new Error(stderr || error.message);
@@ -272,6 +273,27 @@ export function createSageMakerDeploymentResources({ region, deployment, runAws 
   }
 }
 
+export function assertManagedSageMakerResources({
+  endpointName,
+  endpointConfigName,
+  modelNames,
+}) {
+  const expectedConfigPrefix = `${endpointName}-config-`;
+  const expectedModelPrefix = `${endpointName}-model-`;
+  const configPattern = new RegExp(`^${expectedConfigPrefix}\\d{13}$`);
+  const modelPattern = new RegExp(`^${expectedModelPrefix}\\d{13}$`);
+  if (!configPattern.test(endpointConfigName)) {
+    throw new Error(
+      `Refusing to delete endpoint config ${endpointConfigName}; expected a script-managed name matching ${expectedConfigPrefix}<timestamp>`,
+    );
+  }
+  if (!modelNames.length || modelNames.some((name) => !modelPattern.test(name))) {
+    throw new Error(
+      `Refusing to delete model resources; expected script-managed names matching ${expectedModelPrefix}<timestamp>`,
+    );
+  }
+}
+
 function deploy() {
   const region = configuredRegion();
   const deployment = deploymentFromEnvironment({ requireRole: true });
@@ -319,6 +341,7 @@ function remove() {
   const modelNames = [
     ...new Set((endpointConfig.ProductionVariants || []).map((variant) => variant.ModelName).filter(Boolean)),
   ];
+  assertManagedSageMakerResources({ endpointName, endpointConfigName, modelNames });
 
   aws(["sagemaker", "delete-endpoint", "--region", region, "--endpoint-name", endpointName]);
   aws(["sagemaker", "wait", "endpoint-deleted", "--region", region, "--endpoint-name", endpointName]);

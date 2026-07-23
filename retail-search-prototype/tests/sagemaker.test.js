@@ -2,18 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildAgenticModelConnector,
+  buildTrustedConnectorClusterSettings,
   loadPersistentSageMakerConnectorCredentials,
   normalizeAgenticModelProvider,
   prepareAgenticRequestBody,
   redactConnectorCredential,
+  rollbackAgenticRegistration,
   selectConfiguredSageMakerModel,
 } from "../src/lib/agentic-model-provider.js";
 import {
   DEFAULT_INSTANCE_TYPE,
   DEFAULT_MODEL_ID,
   DEFAULT_MODEL_REVISION,
+  assertManagedSageMakerResources,
   buildSageMakerDeployment,
   createSageMakerDeploymentResources,
+  isMissingEndpointError,
 } from "../scripts/sagemaker-ministral.mjs";
 
 test("SageMaker deployment pins Ministral to one ml.g6.2xlarge text-only worker", () => {
@@ -194,6 +198,59 @@ test("persisted SageMaker connectors require explicitly dedicated non-expiring c
   );
 });
 
+test("connector cluster settings preserve existing trusted endpoints and private-IP access", () => {
+  const existingEndpoint = "^http://host\\.docker\\.internal:8000/.*$";
+  const sagemakerSettings = buildTrustedConnectorClusterSettings({
+    provider: "sagemaker",
+    connectorOrigin: "https://runtime.sagemaker.eu-west-1.amazonaws.com",
+    currentPersistent: {
+      "plugins.ml_commons.trusted_connector_endpoints_regex": JSON.stringify([
+        existingEndpoint,
+      ]),
+      "plugins.ml_commons.connector.private_ip_enabled": "true",
+    },
+  });
+  assert.deepEqual(
+    sagemakerSettings["plugins.ml_commons.trusted_connector_endpoints_regex"],
+    [
+      existingEndpoint,
+      "^https://runtime\\.sagemaker\\.eu-west-1\\.amazonaws\\.com/.*$",
+    ],
+  );
+  assert.equal(
+    "plugins.ml_commons.connector.private_ip_enabled" in sagemakerSettings,
+    false,
+  );
+
+  const localSettings = buildTrustedConnectorClusterSettings({
+    provider: "openai",
+    connectorOrigin: "http://host.docker.internal:8000",
+    currentPersistent: sagemakerSettings,
+  });
+  assert.equal(localSettings["plugins.ml_commons.connector.private_ip_enabled"], true);
+  assert.equal(
+    localSettings["plugins.ml_commons.trusted_connector_endpoints_regex"].length,
+    2,
+  );
+});
+
+test("agentic registration rollback removes the agent before its newly registered model", async () => {
+  const calls = [];
+  const errors = await rollbackAgenticRegistration({
+    request: async (method, path) => {
+      calls.push([method, path]);
+      if (path.includes("/agents/")) throw new Error("agent cleanup failed");
+    },
+    registeredAgentId: "agent/id",
+    registeredModelId: "model/id",
+  });
+  assert.deepEqual(calls, [
+    ["DELETE", "/_plugins/_ml/agents/agent%2Fid"],
+    ["DELETE", "/_plugins/_ml/models/model%2Fid"],
+  ]);
+  assert.deepEqual(errors, ["delete agent: agent cleanup failed"]);
+});
+
 test("SageMaker deployment validates region and image tag before creating resources", () => {
   const base = {
     region: "eu-west-1",
@@ -211,6 +268,49 @@ test("SageMaker deployment validates region and image tag before creating resour
   assert.throws(
     () => buildSageMakerDeployment({ ...base, modelId: " " }),
     /Model ID must be a non-empty value/,
+  );
+});
+
+test("SageMaker deletion refuses endpoint configs and models outside its managed namespace", () => {
+  assert.doesNotThrow(() =>
+    assertManagedSageMakerResources({
+      endpointName: "la-trouvaille-ministral",
+      endpointConfigName: "la-trouvaille-ministral-config-1720000000000",
+      modelNames: ["la-trouvaille-ministral-model-1720000000000"],
+    }),
+  );
+  assert.throws(
+    () =>
+      assertManagedSageMakerResources({
+        endpointName: "la-trouvaille-ministral",
+        endpointConfigName: "shared-production-config",
+        modelNames: ["shared-production-model"],
+      }),
+    /Refusing to delete endpoint config/,
+  );
+  assert.throws(
+    () =>
+      assertManagedSageMakerResources({
+        endpointName: "la-trouvaille-ministral",
+        endpointConfigName: "la-trouvaille-ministral-config-1720000000000",
+        modelNames: ["shared-production-model"],
+      }),
+    /Refusing to delete model resources/,
+  );
+});
+
+test("missing endpoint detection does not suppress unrelated validation failures", () => {
+  assert.equal(
+    isMissingEndpointError(
+      'An error occurred (ValidationException): Could not find endpoint "missing".',
+    ),
+    true,
+  );
+  assert.equal(
+    isMissingEndpointError(
+      "An error occurred (ValidationException): Endpoint name contains invalid characters.",
+    ),
+    false,
   );
 });
 

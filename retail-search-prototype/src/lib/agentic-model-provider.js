@@ -1,5 +1,7 @@
 const SAGEMAKER_ENDPOINT_PATTERN = /^[A-Za-z0-9](?:-*[A-Za-z0-9])*$/;
 const AWS_REGION_PATTERN = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/;
+const TRUSTED_CONNECTOR_SETTING = "plugins.ml_commons.trusted_connector_endpoints_regex";
+const PRIVATE_CONNECTOR_SETTING = "plugins.ml_commons.connector.private_ip_enabled";
 
 export function normalizeAgenticModelProvider(value = "openai") {
   const provider = String(value).trim().toLowerCase();
@@ -74,6 +76,67 @@ export function prepareAgenticRequestBody({ provider, requestBody }) {
       },
     },
   };
+}
+
+function normalizeSettingList(value) {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [value];
+  } catch {
+    return [value];
+  }
+}
+
+export function buildTrustedConnectorClusterSettings({
+  provider,
+  connectorOrigin,
+  currentPersistent = {},
+}) {
+  const normalizedProvider = normalizeAgenticModelProvider(provider);
+  const origin = new URL(connectorOrigin).origin;
+  const escapedOrigin = origin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const trustedEndpoint = `^${escapedOrigin}/.*$`;
+  const trustedEndpoints = [
+    ...new Set([
+      ...normalizeSettingList(currentPersistent[TRUSTED_CONNECTOR_SETTING]),
+      trustedEndpoint,
+    ]),
+  ];
+  const settings = { [TRUSTED_CONNECTOR_SETTING]: trustedEndpoints };
+  if (normalizedProvider === "openai" && new URL(origin).protocol === "http:") {
+    settings[PRIVATE_CONNECTOR_SETTING] = true;
+  }
+  return settings;
+}
+
+export async function rollbackAgenticRegistration({
+  request,
+  registeredModelId,
+  registeredAgentId,
+}) {
+  const errors = [];
+  const remove = async (path, label) => {
+    try {
+      await request("DELETE", path);
+    } catch (error) {
+      errors.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  if (registeredAgentId) {
+    await remove(
+      `/_plugins/_ml/agents/${encodeURIComponent(registeredAgentId)}`,
+      "delete agent",
+    );
+  }
+  if (registeredModelId) {
+    await remove(
+      `/_plugins/_ml/models/${encodeURIComponent(registeredModelId)}`,
+      "delete model",
+    );
+  }
+  return errors;
 }
 
 export function buildAgenticModelConnector({

@@ -24,7 +24,9 @@ export function loadPersistentSageMakerConnectorCredentials(environment = proces
   const accessKeyId = String(environment.SAGEMAKER_CONNECTOR_ACCESS_KEY_ID || "").trim();
   const secretAccessKey = String(environment.SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY || "").trim();
   const sessionToken = String(environment.SAGEMAKER_CONNECTOR_SESSION_TOKEN || "").trim();
-  if (sessionToken) {
+  const allowTemporarySession =
+    environment.SAGEMAKER_CONNECTOR_ALLOW_SESSION_CREDENTIALS === "true";
+  if (sessionToken && !allowTemporarySession) {
     throw new Error(
       "SAGEMAKER_CONNECTOR_SESSION_TOKEN is temporary and would expire inside the persisted OpenSearch connector",
     );
@@ -34,7 +36,7 @@ export function loadPersistentSageMakerConnectorCredentials(environment = proces
       "Set SAGEMAKER_CONNECTOR_ACCESS_KEY_ID and SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY to a dedicated principal that can invoke only the configured endpoint",
     );
   }
-  return { accessKeyId, secretAccessKey, sessionToken: "" };
+  return { accessKeyId, secretAccessKey, sessionToken };
 }
 
 function validateSageMakerTarget({ region, endpointName, credentials }) {

@@ -1,4 +1,15 @@
 services:
+  app:
+    build:
+      context: .
+      args:
+        VITE_SEARCH_ENDPOINT: ${VITE_SEARCH_ENDPOINT:-http://127.0.0.1:8790}
+        VITE_UBI_ENDPOINT: ${VITE_UBI_ENDPOINT:-http://127.0.0.1:8787/ubi}
+    container_name: maison-reuse-app
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
   opensearch:
     image: opensearchproject/opensearch:3.7.0
     container_name: maison-reuse-opensearch

@@ -2,10 +2,12 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 export const DEFAULT_ENDPOINT_NAME = "la-trouvaille-ministral";
-export const DEFAULT_INSTANCE_TYPE = "ml.g6.2xlarge";
+export const DEFAULT_INSTANCE_TYPE = "ml.g5.2xlarge";
 export const DEFAULT_MODEL_ID = "mistralai/Ministral-3-8B-Instruct-2512-BF16";
 export const DEFAULT_MODEL_REVISION = "06cc81bfd6e45321d8fc8f816576c5b6ac67ec22";
 export const DEFAULT_SERVED_MODEL_NAME = "ministral-3-8b-instruct-2512";
+export const DEFAULT_ADAPTER_NAME = "psg-agentic-query-planner-v3";
+export const DEFAULT_ADAPTER_PATH = "/opt/ml/model/qlora-agentic-v3/adapter";
 export const DEFAULT_IMAGE_TAG =
   "0.25.1-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.3-2026-07-22-22-50-11";
 export const DEFAULT_INFERENCE_AMI = "al2-ami-sagemaker-inference-gpu-3-1";
@@ -70,6 +72,9 @@ export function buildSageMakerDeployment({
   modelId = DEFAULT_MODEL_ID,
   modelRevision = DEFAULT_MODEL_REVISION,
   servedModelName = DEFAULT_SERVED_MODEL_NAME,
+  adapterModelDataUrl = "",
+  adapterName = DEFAULT_ADAPTER_NAME,
+  adapterPath = DEFAULT_ADAPTER_PATH,
   imageTag = DEFAULT_IMAGE_TAG,
   timestamp = Date.now(),
 }) {
@@ -83,6 +88,13 @@ export function buildSageMakerDeployment({
   requiredEnvironmentValue(modelId, "Model ID");
   requiredEnvironmentValue(modelRevision, "Model revision");
   requiredEnvironmentValue(servedModelName, "Served model name", 256);
+  if (adapterModelDataUrl && !/^s3:\/\/[^/]+\/.+/.test(adapterModelDataUrl)) {
+    throw new Error("Adapter ModelDataUrl must be a non-empty S3 object URI");
+  }
+  if (adapterModelDataUrl) {
+    requiredEnvironmentValue(adapterName, "Adapter name", 256);
+    requiredEnvironmentValue(adapterPath, "Adapter path");
+  }
   if (!DOCKER_TAG_PATTERN.test(imageTag)) {
     throw new Error(`Invalid SageMaker vLLM image tag "${imageTag}"`);
   }
@@ -90,6 +102,30 @@ export function buildSageMakerDeployment({
   const modelName = requiredName(`${endpointName}-model-${suffix}`, "Model name");
   const endpointConfigName = requiredName(`${endpointName}-config-${suffix}`, "Endpoint config name");
   const image = `763104351884.dkr.ecr.${region}.amazonaws.com/vllm:${imageTag}`;
+  const environment = {
+    SM_VLLM_REVISION: modelRevision,
+    SM_VLLM_SERVED_MODEL_NAME: servedModelName,
+    SM_VLLM_TENSOR_PARALLEL_SIZE: "1",
+    SM_VLLM_MAX_MODEL_LEN: "4096",
+    SM_VLLM_MAX_NUM_SEQS: "4",
+    SM_VLLM_MAX_NUM_BATCHED_TOKENS: "4096",
+    SM_VLLM_GPU_MEMORY_UTILIZATION: "0.90",
+    SM_VLLM_DTYPE: "bfloat16",
+    SM_VLLM_LANGUAGE_MODEL_ONLY: "true",
+    PROCESS_AUTO_RECOVERY: "true",
+  };
+  if (adapterModelDataUrl) {
+    environment.SM_VLLM_MODEL = modelId;
+    environment.SM_VLLM_ENABLE_LORA = "true";
+    environment.SM_VLLM_MAX_LORA_RANK = "16";
+    environment.SM_VLLM_LORA_MODULES = JSON.stringify({
+      name: adapterName,
+      path: adapterPath,
+      base_model_name: modelId,
+    });
+  } else {
+    environment.HF_MODEL_ID = modelId;
+  }
 
   return {
     endpointName,
@@ -100,19 +136,8 @@ export function buildSageMakerDeployment({
       ExecutionRoleArn: executionRoleArn,
       PrimaryContainer: {
         Image: image,
-        Environment: {
-          HF_MODEL_ID: modelId,
-          SM_VLLM_REVISION: modelRevision,
-          SM_VLLM_SERVED_MODEL_NAME: servedModelName,
-          SM_VLLM_TENSOR_PARALLEL_SIZE: "1",
-          SM_VLLM_MAX_MODEL_LEN: "4096",
-          SM_VLLM_MAX_NUM_SEQS: "4",
-          SM_VLLM_MAX_NUM_BATCHED_TOKENS: "4096",
-          SM_VLLM_GPU_MEMORY_UTILIZATION: "0.90",
-          SM_VLLM_DTYPE: "bfloat16",
-          SM_VLLM_LANGUAGE_MODEL_ONLY: "true",
-          PROCESS_AUTO_RECOVERY: "true",
-        },
+        ...(adapterModelDataUrl ? { ModelDataUrl: adapterModelDataUrl } : {}),
+        Environment: environment,
       },
     },
     endpointConfig: {
@@ -149,6 +174,9 @@ function deploymentFromEnvironment({ requireRole = false } = {}) {
     modelId: process.env.SAGEMAKER_MINISTRAL_MODEL_ID || DEFAULT_MODEL_ID,
     modelRevision: process.env.SAGEMAKER_MINISTRAL_MODEL_REVISION || DEFAULT_MODEL_REVISION,
     servedModelName: process.env.SAGEMAKER_MINISTRAL_MODEL || DEFAULT_SERVED_MODEL_NAME,
+    adapterModelDataUrl: process.env.SAGEMAKER_MINISTRAL_ADAPTER_MODEL_DATA_URL || "",
+    adapterName: process.env.SAGEMAKER_MINISTRAL_ADAPTER_NAME || DEFAULT_ADAPTER_NAME,
+    adapterPath: process.env.SAGEMAKER_MINISTRAL_ADAPTER_PATH || DEFAULT_ADAPTER_PATH,
     imageTag: process.env.SAGEMAKER_VLLM_IMAGE_TAG || DEFAULT_IMAGE_TAG,
   });
 }
@@ -273,6 +301,137 @@ export function createSageMakerDeploymentResources({ region, deployment, runAws 
   }
 }
 
+export function replaceSageMakerEndpoint({
+  region,
+  deployment,
+  previousEndpointConfigName,
+  runAws = aws,
+}) {
+  let modelCreated = false;
+  let configCreated = false;
+  let previousEndpointDeleted = false;
+  let replacementEndpointCreated = false;
+  try {
+    runAws([
+      "sagemaker",
+      "create-model",
+      "--region",
+      region,
+      "--cli-input-json",
+      JSON.stringify(deployment.model),
+    ]);
+    modelCreated = true;
+    runAws([
+      "sagemaker",
+      "create-endpoint-config",
+      "--region",
+      region,
+      "--cli-input-json",
+      JSON.stringify(deployment.endpointConfig),
+    ]);
+    configCreated = true;
+    runAws([
+      "sagemaker",
+      "delete-endpoint",
+      "--region",
+      region,
+      "--endpoint-name",
+      deployment.endpointName,
+    ]);
+    runAws([
+      "sagemaker",
+      "wait",
+      "endpoint-deleted",
+      "--region",
+      region,
+      "--endpoint-name",
+      deployment.endpointName,
+    ]);
+    previousEndpointDeleted = true;
+    runAws([
+      "sagemaker",
+      "create-endpoint",
+      "--region",
+      region,
+      "--cli-input-json",
+      JSON.stringify(deployment.endpoint),
+    ]);
+    replacementEndpointCreated = true;
+    runAws([
+      "sagemaker",
+      "wait",
+      "endpoint-in-service",
+      "--region",
+      region,
+      "--endpoint-name",
+      deployment.endpointName,
+    ]);
+  } catch (error) {
+    const rollbackErrors = [];
+    const rollback = (args, label) => {
+      try {
+        runAws(args);
+      } catch (rollbackError) {
+        rollbackErrors.push(`${label}: ${errorMessage(rollbackError)}`);
+      }
+    };
+    if (replacementEndpointCreated) {
+      rollback(
+        ["sagemaker", "delete-endpoint", "--region", region, "--endpoint-name", deployment.endpointName],
+        "delete failed replacement endpoint",
+      );
+      rollback(
+        ["sagemaker", "wait", "endpoint-deleted", "--region", region, "--endpoint-name", deployment.endpointName],
+        "wait for failed replacement deletion",
+      );
+    }
+    if (previousEndpointDeleted) {
+      rollback(
+        [
+          "sagemaker",
+          "create-endpoint",
+          "--region",
+          region,
+          "--endpoint-name",
+          deployment.endpointName,
+          "--endpoint-config-name",
+          previousEndpointConfigName,
+        ],
+        "restore previous endpoint",
+      );
+      rollback(
+        ["sagemaker", "wait", "endpoint-in-service", "--region", region, "--endpoint-name", deployment.endpointName],
+        "wait for previous endpoint restoration",
+      );
+    }
+    if (configCreated) {
+      rollback(
+        [
+          "sagemaker",
+          "delete-endpoint-config",
+          "--region",
+          region,
+          "--endpoint-config-name",
+          deployment.endpointConfigName,
+        ],
+        "delete replacement endpoint config",
+      );
+    }
+    if (modelCreated) {
+      rollback(
+        ["sagemaker", "delete-model", "--region", region, "--model-name", deployment.modelName],
+        "delete replacement model",
+      );
+    }
+    const rollbackSummary = rollbackErrors.length
+      ? ` Rollback errors: ${rollbackErrors.join("; ")}`
+      : previousEndpointDeleted
+        ? " The previous endpoint configuration was restored."
+        : " The existing endpoint was not changed.";
+    throw new Error(`${errorMessage(error)}${rollbackSummary}`, { cause: error });
+  }
+}
+
 export function assertManagedSageMakerResources({
   endpointName,
   endpointConfigName,
@@ -316,6 +475,36 @@ function status() {
     endpointName,
   ]);
   console.log(JSON.stringify(endpoint, null, 2));
+}
+
+function update() {
+  const region = configuredRegion();
+  const deployment = deploymentFromEnvironment({ requireRole: true });
+  if (!deployment.model.PrimaryContainer.ModelDataUrl) {
+    throw new Error(
+      "Set SAGEMAKER_MINISTRAL_ADAPTER_MODEL_DATA_URL to the validated SageMaker model.tar.gz artifact",
+    );
+  }
+  const current = awsJson([
+    "sagemaker",
+    "describe-endpoint",
+    "--region",
+    region,
+    "--endpoint-name",
+    deployment.endpointName,
+  ]);
+  printPlan(deployment);
+  console.log(
+    `Replacing ${deployment.endpointName} during a maintenance window; rollback config is ${current.EndpointConfigName}...`,
+  );
+  replaceSageMakerEndpoint({
+    region,
+    deployment,
+    previousEndpointConfigName: current.EndpointConfigName,
+  });
+  console.log(
+    `SageMaker endpoint ${deployment.endpointName} is InService with adapter ${process.env.SAGEMAKER_MINISTRAL_ADAPTER_NAME || DEFAULT_ADAPTER_NAME}.`,
+  );
 }
 
 function remove() {
@@ -363,9 +552,10 @@ function main() {
   const command = process.argv[2] || "plan";
   if (command === "plan") printPlan(deploymentFromEnvironment());
   else if (command === "deploy") deploy();
+  else if (command === "update") update();
   else if (command === "status") status();
   else if (command === "delete") remove();
-  else throw new Error("Usage: node scripts/sagemaker-ministral.mjs [plan|deploy|status|delete]");
+  else throw new Error("Usage: node scripts/sagemaker-ministral.mjs [plan|deploy|update|status|delete]");
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

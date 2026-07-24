@@ -15,6 +15,7 @@ import {
   validateAgenticDsl,
 } from "../src/lib/agentic-search.js";
 import {
+  buildBasicLexicalQuery,
   createLiteralQueryPlan,
   createQueryUnderstanding,
   localSearchProducts,
@@ -460,21 +461,38 @@ async function search(payload) {
       : "disabled";
 
   try {
-    lexicalDslQuery = {
-      size,
-      track_total_hits: trackTotalHits,
-      query: buildQuery({
-        query,
-        filters,
-        maxPrice: effectiveMaxPrice,
-        sort,
-        tier2Rewrite,
-        personaContext: personaSearchContext,
-        understanding,
-        queryUnderstandingEnabled,
-      }),
-      _source: sourceFields,
-    };
+    if (queryUnderstandingEnabled) {
+      lexicalDslQuery = {
+        size,
+        track_total_hits: trackTotalHits,
+        query: buildQuery({
+          query,
+          filters,
+          maxPrice: effectiveMaxPrice,
+          sort,
+          tier2Rewrite,
+          personaContext: personaSearchContext,
+          understanding,
+          queryUnderstandingEnabled,
+        }),
+        _source: sourceFields,
+      };
+    } else {
+      const postFilter = [
+        { term: { availability: "active" } },
+        { range: { price: { lte: Number(effectiveMaxPrice) || 20000 } } },
+      ];
+      Object.entries(filters).forEach(([key, values]) => {
+        if (values.length) postFilter.push({ terms: { [key]: keywordValues(values) } });
+      });
+      lexicalDslQuery = {
+        size,
+        track_total_hits: trackTotalHits,
+        query: buildBasicLexicalQuery(query),
+        post_filter: { bool: { filter: postFilter } },
+        _source: sourceFields,
+      };
+    }
     const sortClause = buildSort(sort);
     if (sortClause) lexicalDslQuery.sort = sortClause;
 

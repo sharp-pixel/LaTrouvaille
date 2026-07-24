@@ -13,6 +13,7 @@
     "opensearch:agentic": "node scripts/configure-agentic-search.mjs",
     "sagemaker:plan": "node scripts/sagemaker-ministral.mjs plan",
     "sagemaker:deploy": "node scripts/sagemaker-ministral.mjs deploy",
+    "sagemaker:update": "node scripts/sagemaker-ministral.mjs update",
     "sagemaker:status": "node scripts/sagemaker-ministral.mjs status",
     "sagemaker:delete": "node scripts/sagemaker-ministral.mjs delete",
     "search:api": "node scripts/search-api.mjs",

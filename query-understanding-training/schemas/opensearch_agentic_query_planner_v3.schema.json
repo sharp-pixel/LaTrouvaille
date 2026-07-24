@@ -169,6 +169,7 @@
         "intent_disambiguation",
         "exact_lookup",
         "filter_and_sort",
+        "ranking_mode_contrast",
         "broad_query",
         "mapping_variation",
         "adversarial_fallback"

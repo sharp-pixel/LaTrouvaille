@@ -57,6 +57,7 @@ class TrainerSettings(ConfigModel):
     lr_scheduler_type: str = "cosine"
     warmup_ratio: float = Field(default=0.03, ge=0, lt=1)
     num_train_epochs: float = Field(default=2.0, gt=0)
+    max_steps: int = Field(default=-1, ge=-1)
     max_grad_norm: float = Field(default=0.3, gt=0)
     optim: str = "paged_adamw_8bit"
     logging_steps: int = Field(default=10, ge=1)

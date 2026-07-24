@@ -24,7 +24,7 @@ lora:
   alpha: 32
   dropout: 0.05
   # The checkpoint is multimodal. This regex deliberately excludes the vision tower.
-  target_modules_regex: '^language_model\.model\.layers\.\d+\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))$'
+  target_modules_regex: '^model\.language_model\.layers\.\d+\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))$'
 
 trainer:
   output_dir: ../artifacts/qlora-agentic-v3

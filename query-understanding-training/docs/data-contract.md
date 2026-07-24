@@ -108,12 +108,20 @@ A production corpus should cover at least:
 | Intent and phrase disambiguation | 20% |
 | Exact brand/model lookup | 15% |
 | Facets, ranges, and conflicting filters | 15% |
-| All supported sort modes | 10% |
+| Matched contrasts across all supported sort modes | 10% |
 | Broad and zero-context queries | 5% |
 | Mapping/query-field variation | 10% |
 | Adversarial and fallback cases | 5% |
 
 Split duplicate surface queries and mapping variants as groups so near-identical requests cannot leak across train/evaluation partitions.
+
+The checked-in generator instantiates 1,160 semantic groups with five
+persona/mapping counterfactuals each. This includes 40 request families rendered
+in all four ranking modes; only the sort contract and its required rank-feature
+shape change within a family. It writes 4,640 training examples and 1,160
+evaluation examples while keeping every scenario group and every four-way
+ranking family wholly within one split. `quft build-data --check` is the
+reproducibility and leakage gate.
 
 ## Acceptance gates
 

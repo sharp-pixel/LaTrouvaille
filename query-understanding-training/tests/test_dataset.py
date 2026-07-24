@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from query_understanding.config import TrainingConfig
+from query_understanding.corpus import EVAL_ROWS, TRAIN_ROWS, build_corpus, render_jsonl
 from query_understanding.dataset import canonical_json, read_examples, to_prompt_completion, validate_dataset
 from query_understanding.policy import CompilerPolicy
 
@@ -11,12 +12,16 @@ def test_checked_in_datasets_validate(config: TrainingConfig, policy: CompilerPo
     eval_report = validate_dataset(config.data.eval_file, policy)
     assert train_report.ok, train_report.issues
     assert eval_report.ok, eval_report.issues
-    assert train_report.total == 10
-    assert eval_report.total == 10
+    assert train_report.total == TRAIN_ROWS
+    assert eval_report.total == EVAL_ROWS
 
 
 def test_source_row_becomes_completion_only_conversation(config: TrainingConfig, policy: CompilerPolicy) -> None:
-    example = read_examples(config.data.train_file, policy)[0]
+    example = next(
+        candidate
+        for candidate in read_examples(config.data.train_file, policy)
+        if '"id":"watch-collector"' in candidate.input.query_text
+    )
     row = to_prompt_completion(example)
     prompt = row["prompt"]
     completion = row["completion"]
@@ -25,7 +30,7 @@ def test_source_row_becomes_completion_only_conversation(config: TrainingConfig,
     assert prompt[0]["role"] == "system"
     assert prompt[1]["role"] == "user"
     assert completion[0]["role"] == "assistant"
-    assert "Question: Normalized shopper request: Dress watch under 15000" in prompt[1]["content"]
+    assert "Question: Normalized shopper request:" in prompt[1]["content"]
     assert '"id":"watch-collector"' in prompt[1]["content"]
     assert (
         '"query_expansion":"dress watch reference provenance full set serviced collector steel"' in prompt[1]["content"]
@@ -161,3 +166,88 @@ def test_duplicate_ids_are_rejected(
     assert report.total == 2
     assert report.valid == 1
     assert "duplicate example_id" in report.issues[0].message
+
+
+def test_checked_in_corpus_is_reproducible(config: TrainingConfig) -> None:
+    corpus = build_corpus()
+    assert config.data.train_file.read_text(encoding="utf-8") == render_jsonl(corpus.train)
+    assert config.data.eval_file.read_text(encoding="utf-8") == render_jsonl(corpus.eval)
+    report = corpus.report()
+    assert report["group_overlap"] == []
+    assert report["ranking_family_overlap"] == []
+    assert report["control_overlap"] == []
+
+
+def test_ranking_mode_counterfactuals_isolate_sort_behavior() -> None:
+    for examples in (build_corpus().train, build_corpus().eval):
+        cases: dict[tuple[str, int], dict[str, object]] = {}
+        for example in examples:
+            if example.slice.value != "ranking_mode_contrast":
+                continue
+            family_id, variant_text = example.example_id.split("-sort-", maxsplit=1)
+            _, variant = variant_text.rsplit("-v", maxsplit=1)
+            cases.setdefault((family_id, int(variant)), {})[example.expectations.sort_mode] = example
+
+        assert cases
+        for variants in cases.values():
+            assert set(variants) == {"recommended", "lowest_price", "newest", "price_drop"}
+            recommended = variants["recommended"]
+            assert hasattr(recommended, "target_body")
+            recommended_body = recommended.target_body.to_opensearch()
+            recommended_bool = recommended_body["query"]["bool"]
+            rank_features = [clause for clause in recommended_bool["should"] if "rank_feature" in clause]
+            assert len(rank_features) == 3
+            assert "sort" not in recommended_body
+
+            for sort_mode in ("lowest_price", "newest", "price_drop"):
+                explicit = variants[sort_mode]
+                assert hasattr(explicit, "target_body")
+                explicit_body = explicit.target_body.to_opensearch()
+                explicit_bool = explicit_body["query"]["bool"]
+                assert explicit_body["size"] == recommended_body["size"]
+                assert explicit_body["track_total_hits"] == recommended_body["track_total_hits"]
+                assert explicit_bool["filter"] == recommended_bool["filter"]
+                assert explicit_bool["must"] == recommended_bool["must"]
+                assert explicit_body["sort"]
+                assert all("rank_feature" not in clause for clause in explicit_bool.get("should", []))
+
+
+def test_corpus_has_extensive_balanced_coverage(config: TrainingConfig, policy: CompilerPolicy) -> None:
+    train = tuple(read_examples(config.data.train_file, policy))
+    evaluation = tuple(read_examples(config.data.eval_file, policy))
+    corpus = build_corpus()
+    assert len(train) == TRAIN_ROWS
+    assert len(evaluation) == EVAL_ROWS
+
+    for report in (corpus.report()["train"], corpus.report()["eval"]):
+        assert isinstance(report, dict)
+        assert set(report["slices"]) == {
+            "adversarial_fallback",
+            "broad_query",
+            "clean_single_category",
+            "exact_lookup",
+            "filter_and_sort",
+            "intent_disambiguation",
+            "mapping_variation",
+            "ranking_mode_contrast",
+        }
+        assert set(report["personas"]) == {
+            "anonymous",
+            "fashion-insider",
+            "first-luxury-purchase",
+            "watch-collector",
+        }
+        assert set(report["sort_modes"]) == {"lowest_price", "newest", "price_drop", "recommended"}
+        assert set(report["categories"]) == {
+            "accessories",
+            "bags",
+            "clothing",
+            "dresses",
+            "jewellery",
+            "shoes",
+            "watches",
+        }
+        assert set(report["mapping_shapes"]) == {"_doc", "bare", "mappings"}
+        assert set(report["text_operators"]) == {"and", "or"}
+        assert set(report["result_sizes"]) == {"12", "24", "36", "48", "72", "96"}
+        assert set(report["track_total_hits"]) == {"0", "100", "1000", "10000"}

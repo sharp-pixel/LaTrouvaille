@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildBasicLexicalQuery,
   createLiteralQueryPlan,
   createQueryUnderstanding,
   deriveEffectiveSort,
@@ -8,6 +9,17 @@ import {
   parseMaxPrice,
   stripQueryControls,
 } from "../src/lib/search.js";
+
+test("basic lexical query applies no query understanding or scoring recipe", () => {
+  assert.deepEqual(buildBasicLexicalQuery("dress watch under 1000 newest"), {
+    multi_match: {
+      query: "dress watch under 1000 newest",
+      fields: ["title", "brand", "canonical_text", "description"],
+      operator: "or",
+    },
+  });
+  assert.deepEqual(buildBasicLexicalQuery("  "), { match_all: {} });
+});
 
 test("literal query plans do not infer shopper intent or controls", () => {
   const plan = createLiteralQueryPlan("dress watch under 1000 newest");

@@ -9,7 +9,7 @@ The assistant completion contains `size`, integer `track_total_hits` (0–10,000
 - A `uv` project with a committed lockfile, CUDA PyTorch for Linux/Windows x86_64, and native MPS PyTorch for Apple Silicon macOS.
 - A strict `opensearch_agentic_query_planner_v3` dataset contract.
 - Shared system and user prompt assets used by both training and OpenSearch agent registration.
-- Canonical JSONL fixtures and completion-only chat conversion.
+- A deterministic 4,640-row training corpus and 1,160-row grouped evaluation corpus, plus completion-only chat conversion.
 - Dataset, index, mapping/query-field intersection, top-level key, sort, required-filter, query-type, clause-count, `size`, and `k` validation.
 - A text-only QLoRA runner for the multimodal Ministral checkpoint.
 - Explicit assistant-token masking; target JSON is rejected when it exceeds the sequence limit, never truncated.
@@ -17,7 +17,12 @@ The assistant completion contains `size`, integer `track_total_hits` (0–10,000
 - Structural evaluation for JSON validity, request-body validity, policy validity, exact request match, exact persona-clause match, and required-filter recall.
 - Run manifests with objective, prompt, dataset, policy, lock, and immutable base-model hashes.
 
-The checked-in JSONL files are executable fixtures, not a production training corpus. The design calls for 1,000–5,000 reviewed SFT examples and at least 1,000 held-out labeled queries.
+The checked-in JSONL files are reproducibly generated, policy-valid training and
+evaluation corpora. They cover all supported slices, personas, sorts, facets,
+mapping shapes, result budgets, and adversarial instructions. Forty four-way
+ranking families hold the request constant while varying only recommended,
+lowest-price, newest, and price-drop behavior. Generated examples still require
+human review and retrieval-quality evaluation before a production model release.
 
 ## Quick start
 
@@ -26,6 +31,7 @@ From this directory:
 ```bash
 uv sync --locked --no-editable
 uv run --locked --no-editable quft doctor
+uv run --locked --no-editable quft build-data --check
 uv run --locked --no-editable quft validate-data
 uv run --locked --no-editable quft train
 uv run --locked --no-editable pytest
@@ -46,6 +52,30 @@ uv run --locked --no-editable quft train --config configs/qlora-5090.yaml --exec
 ```
 
 The training configuration starts with the design baseline: 4-bit NF4 QLoRA, BF16 compute, sequence length 2,048, batch size 1, gradient accumulation 16, LoRA rank 16/alpha 32, cosine scheduling, and two epochs.
+
+## SageMaker training
+
+SageMaker Training does not currently expose `ml.g6.2xlarge` in `eu-west-1`.
+The training launcher therefore uses `ml.g5.2xlarge`, which has the same 24 GiB
+of GPU memory and an account quota of one on-demand job. The live G6 inference
+endpoint is independent and remains billable while training runs.
+
+The launcher creates a dedicated execution role, an encrypted private artifact
+bucket, uploads the current source tree, and uses the pinned AWS PyTorch 2.9 /
+CUDA 13.0 training DLC. Start with the two-step memory and compatibility smoke
+job:
+
+```bash
+node scripts/sagemaker-training.mjs plan smoke
+node scripts/sagemaker-training.mjs launch smoke
+```
+
+Only after the smoke job completes with safe peak VRAM should the full two-epoch
+job be launched:
+
+```bash
+node scripts/sagemaker-training.mjs launch full
+```
 
 The base model is pinned to Hugging Face revision `06cc81bfd6e45321d8fc8f816576c5b6ac67ec22`. Update that value deliberately and review chat-template/tokenization behavior before moving it.
 
@@ -121,7 +151,7 @@ See [docs/integration.md](docs/integration.md) for the boundary with the existin
 
 ```text
 configs/                     QLoRA and OpenSearch policy profiles
-data/                        Small reviewed train/eval fixtures
+data/                        Generated train/eval corpora and review guidance
 docs/                        Contract and integration decisions
 src/query_understanding/     Schema, validation, tokenization, training, evaluation, CLI
 tests/                       CPU-only unit and golden-path tests

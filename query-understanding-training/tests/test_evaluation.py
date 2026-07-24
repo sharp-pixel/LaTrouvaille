@@ -29,8 +29,8 @@ def test_perfect_predictions_score_one(
         encoding="utf-8",
     )
     report = evaluate_predictions(config.data.eval_file, predictions, policy)
-    assert report.examples == 10
-    assert report.predictions_found == 10
+    assert report.examples == len(examples)
+    assert report.predictions_found == len(examples)
     assert report.json_validity == 1.0
     assert report.request_body_validity == 1.0
     assert report.dsl_policy_validity == 1.0
@@ -122,8 +122,9 @@ def test_persona_clause_metric_rejects_persona_after_rank_feature(
 
     assert reordered == 1
     assert report.request_body_validity == 1.0
-    assert report.persona_clause_exact_match == 0.9
-    assert report.dsl_policy_validity == 0.9
+    expected = round(1 - (1 / len(examples)), 6)
+    assert report.persona_clause_exact_match == expected
+    assert report.dsl_policy_validity == expected
 
 
 @pytest.mark.parametrize("leak_target", ("must", "filter"))
@@ -151,8 +152,9 @@ def test_persona_clause_metric_rejects_persona_leaking_into_required_clauses(
 
     assert leaked == 1
     assert report.request_body_validity == 1.0
-    assert report.persona_clause_exact_match == 0.9
-    assert report.dsl_policy_validity == 0.9
+    expected = round(1 - (1 / len(examples)), 6)
+    assert report.persona_clause_exact_match == expected
+    assert report.dsl_policy_validity == expected
 
 
 def test_exact_match_uses_original_decoded_json(

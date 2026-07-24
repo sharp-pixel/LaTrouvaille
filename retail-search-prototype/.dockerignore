@@ -1,0 +1,8 @@
+.git
+.gitignore
+.DS_Store
+data
+dist
+node_modules
+npm-debug.log*
+qa-captures

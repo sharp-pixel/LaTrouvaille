@@ -10,7 +10,7 @@ React prototype for a second-hand luxury retail search experience with:
 - OpenSearch-backed search API with a deterministic lexical fallback in `scripts/search-api.mjs`
 - OpenSearch indexing scripts in `scripts/`
 
-The catalogue is generated deterministically from luxury item templates. The browser keeps a bounded `11,040` item preview for home modules and offline fallback, while the OpenSearch indexer streams `2,000,000` unique used-item listings across all categories. Duplicate models are represented as separate seller listings with their own condition, country, price, seller, and listing date.
+The catalogue is generated deterministically from 69 luxury item templates. The demo keeps two seller variants per template, producing an evenly represented 138-listing catalogue in both the browser fallback and OpenSearch. Duplicate models are separate seller listings with their own condition, country, price, seller, and listing date. A two-million-listing profile remains available for explicit scale testing.
 
 Tier-1 search caps hit counting for latency, so broad result sets may display lower-bound counts such as `10,000+`. Exact analytics and deeper count jobs belong in a Tier-2 path.
 
@@ -69,11 +69,24 @@ UBI_FORWARD_OPENSEARCH=1 npm run ubi:collector
 
 ## Local OpenSearch
 
-Start OpenSearch and Dashboards:
+Build and start the app, OpenSearch, and Dashboards:
 
 ```bash
 docker compose -f compose.yml up -d
 ```
+
+The containerized app is available at `http://127.0.0.1:5173/`. Its browser-facing
+search and telemetry endpoints default to the locally published services and can
+be changed when building the image:
+
+```bash
+VITE_SEARCH_ENDPOINT=https://search.example.test \
+VITE_UBI_ENDPOINT=https://telemetry.example.test/ubi \
+docker compose -f compose.yml up -d --build app
+```
+
+Vite embeds these values in the static bundle, so rebuild the `app` service after
+changing either endpoint.
 
 Then create UBI indexes and index the catalogue:
 
@@ -81,10 +94,10 @@ Then create UBI indexes and index the catalogue:
 npm run opensearch:bootstrap
 ```
 
-The catalogue indexer defaults to `2,000,000` generated listings and streams in bulk batches. For a smaller local run:
+The catalogue indexer defaults to the balanced 138-listing demo dataset. Override the size only when testing larger indexes:
 
 ```bash
-CATALOG_SIZE=100000 npm run opensearch:index -- --reset
+CATALOG_SIZE=2000000 npm run opensearch:index -- --reset
 ```
 
 Start the search API:
@@ -139,7 +152,7 @@ No API key is needed for the usual local LM Studio server. The registered connec
 
 ### Amazon SageMaker
 
-The optional SageMaker path deploys the pinned `mistralai/Ministral-3-8B-Instruct-2512-BF16` revision to one `ml.g6.2xlarge` real-time endpoint in `eu-west-1`. It uses the dated AWS vLLM 0.25.1 SageMaker DLC tag `0.25.1-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.3-2026-07-22-22-50-11`, loads only the language model, caps the model context at 4,096 tokens, limits concurrency to four sequences, and retains JSON-schema structured output. The endpoint is billable whenever it is `InService`.
+The optional SageMaker path deploys the pinned `mistralai/Ministral-3-8B-Instruct-2512-BF16` revision to one `ml.g5.2xlarge` real-time endpoint in `eu-west-1`. It uses the dated AWS vLLM 0.25.1 SageMaker DLC tag `0.25.1-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.3-2026-07-22-22-50-11`, loads only the language model, caps the model context at 4,096 tokens, limits concurrency to four sequences, and retains JSON-schema structured output. The endpoint is billable whenever it is `InService`.
 
 The deployment command requires the AWS CLI and an existing SageMaker model execution role. The role must trust `sagemaker.amazonaws.com` and allow the SageMaker service to pull the pinned DLC image. Inspect the exact resources without creating anything:
 
@@ -156,7 +169,16 @@ npm run sagemaker:deploy
 npm run sagemaker:status
 ```
 
-The deploy command refuses to replace an existing endpoint. This is intentional: the current account quota permits one `ml.g6.2xlarge`, while a blue/green endpoint update can temporarily require a second instance. Delete and recreate during a maintenance window, or request quota for two instances before implementing zero-downtime updates.
+The deploy command refuses to replace an existing endpoint. This is intentional: blue/green endpoint updates can temporarily require additional instance quota. Delete and recreate during a maintenance window, or request sufficient quota before implementing zero-downtime updates.
+
+After validating a LoRA artifact, replace the existing endpoint during a maintenance window without requesting a second instance:
+
+```bash
+export SAGEMAKER_MINISTRAL_ADAPTER_MODEL_DATA_URL=s3://BUCKET/path/to/model.tar.gz
+npm run sagemaker:update
+```
+
+The update creates the replacement model and endpoint configuration first, briefly removes the endpoint, then recreates it under the same name. If replacement startup fails, it restores the previous endpoint configuration and removes the failed replacement resources.
 
 Configure the self-managed OpenSearch prototype to invoke SageMaker through an `aws_sigv4` ML Commons connector:
 
@@ -164,7 +186,7 @@ Configure the self-managed OpenSearch prototype to invoke SageMaker through an `
 export AGENTIC_MODEL_PROVIDER=sagemaker
 export SAGEMAKER_REGION=eu-west-1
 export SAGEMAKER_MINISTRAL_ENDPOINT=la-trouvaille-ministral
-export SAGEMAKER_MINISTRAL_MODEL=ministral-3-8b-instruct-2512
+export SAGEMAKER_MINISTRAL_MODEL=psg-agentic-query-planner-v3
 export SAGEMAKER_CONNECTOR_ACCESS_KEY_ID=DEDICATED_INVOKER_ACCESS_KEY
 export SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY=DEDICATED_INVOKER_SECRET_KEY
 npm run opensearch:agentic
@@ -177,7 +199,7 @@ The connector identity needs only `sagemaker:InvokeEndpoint` on:
 arn:aws:sagemaker:eu-west-1:ACCOUNT_ID:endpoint/la-trouvaille-ministral
 ```
 
-For this self-managed local OpenSearch node, the configuration script requires explicit, non-expiring `SAGEMAKER_CONNECTOR_ACCESS_KEY_ID` and `SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY` values and stores them in OpenSearch's encrypted connector credential field. It intentionally does not export the active AWS CLI profile or reuse generic AWS environment credentials, which might belong to a broader principal. Create a dedicated principal whose only permission is the `sagemaker:InvokeEndpoint` resource shown above. Temporary session credentials are rejected because their token would expire without refresh. Connector setup merges its trusted endpoint into the existing OpenSearch allowlist and does not disable private-IP access used by an existing local connector. The SageMaker connector removes the JSON Schema `uniqueItems` annotation because vLLM 0.25.1 does not implement it; the runtime DSL validator still enforces exact field sets, filter values, and clause ordering. For production, prefer Amazon OpenSearch Service with an assumable, least-privilege IAM connector role instead of long-lived access keys.
+For this self-managed local OpenSearch node, the configuration script requires explicit, non-expiring `SAGEMAKER_CONNECTOR_ACCESS_KEY_ID` and `SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY` values and stores them in OpenSearch's encrypted connector credential field. It intentionally does not export the active AWS CLI profile or reuse generic AWS environment credentials, which might belong to a broader principal. Create a dedicated principal whose only permission is the `sagemaker:InvokeEndpoint` resource shown above. Temporary session credentials are rejected by default because their token would expire without refresh. For a bounded local test only, set `SAGEMAKER_CONNECTOR_SESSION_TOKEN` and `SAGEMAKER_CONNECTOR_ALLOW_SESSION_CREDENTIALS=true`; the connector will stop working when the session expires and must not be treated as durable configuration. Connector setup merges its trusted endpoint into the existing OpenSearch allowlist and does not disable private-IP access used by an existing local connector. The SageMaker connector removes the JSON Schema `uniqueItems` annotation because vLLM 0.25.1 does not implement it; the runtime DSL validator still enforces exact field sets, filter values, and clause ordering. For production, prefer Amazon OpenSearch Service with an assumable, least-privilege IAM connector role instead of long-lived access keys.
 
 Delete the billable endpoint, endpoint configuration, and SageMaker model resource together:
 
@@ -185,7 +207,7 @@ Delete the billable endpoint, endpoint configuration, and SageMaker model resour
 npm run sagemaker:delete
 ```
 
-The deployment defaults can be overridden with `SAGEMAKER_MINISTRAL_ENDPOINT`, `SAGEMAKER_MINISTRAL_INSTANCE_TYPE`, `SAGEMAKER_MINISTRAL_MODEL_ID`, `SAGEMAKER_MINISTRAL_MODEL_REVISION`, `SAGEMAKER_MINISTRAL_MODEL`, and `SAGEMAKER_VLLM_IMAGE_TAG`. Keep the default model revision synchronized with `query-understanding-training/configs/qlora-5090.yaml`. The current command serves the pinned base model; add the trained LoRA under the `psg-agentic-query-planner-v3` alias only after validating adapter loading and held-out planner accuracy on this DLC.
+The deployment defaults can be overridden with `SAGEMAKER_MINISTRAL_ENDPOINT`, `SAGEMAKER_MINISTRAL_INSTANCE_TYPE`, `SAGEMAKER_MINISTRAL_MODEL_ID`, `SAGEMAKER_MINISTRAL_MODEL_REVISION`, `SAGEMAKER_MINISTRAL_MODEL`, and `SAGEMAKER_VLLM_IMAGE_TAG`. Keep the default model revision synchronized with `query-understanding-training/configs/qlora-5090.yaml`. To load a validated SageMaker training artifact, set `SAGEMAKER_MINISTRAL_ADAPTER_MODEL_DATA_URL` to its `model.tar.gz` S3 URI. The deployment mounts the artifact, loads `/opt/ml/model/qlora-agentic-v3/adapter`, and exposes it under `SAGEMAKER_MINISTRAL_ADAPTER_NAME` (default `psg-agentic-query-planner-v3`) while retaining the base-model alias for rollback and comparison.
 
 References: [AWS vLLM SageMaker deployment](https://aws.github.io/deep-learning-containers/vllm/deployment/sagemaker/), [AWS vLLM configuration](https://aws.github.io/deep-learning-containers/vllm/configuration/), and [OpenSearch SageMaker connectors](https://docs.opensearch.org/latest/ml-commons-plugin/remote-models/connectors/).
 

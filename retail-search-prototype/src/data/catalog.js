@@ -218,8 +218,11 @@ export const productImageVariants = {
   ],
 };
 
-export const TARGET_CATALOG_SIZE = 2_000_000;
-export const PREVIEW_CATALOG_SIZE = 11_040;
+export const DEMO_LISTINGS_PER_PRODUCT = 2;
+export const DEMO_CATALOG_SIZE = productSpecs.length * DEMO_LISTINGS_PER_PRODUCT;
+export const SCALE_CATALOG_SIZE = 2_000_000;
+export const TARGET_CATALOG_SIZE = DEMO_CATALOG_SIZE;
+export const PREVIEW_CATALOG_SIZE = DEMO_CATALOG_SIZE;
 const conditions = ["Never worn", "Very good condition", "Good condition", "Fair condition"];
 const sellerCountries = [
   "France",

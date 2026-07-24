@@ -635,7 +635,7 @@ test("runtime validator accepts recursively key-sorted v3 training completion JS
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
-  const example = rows.find((row) => row.example_id === "dress-watch-quiet-intermediate");
+  const example = rows.find((row) => row.example_id === "clean-single-category-0000-v0");
   assert.ok(example, "checked-in v3 counterfactual fixture must exist");
 
   const recursivelySorted = (value) => {
@@ -648,6 +648,7 @@ test("runtime validator accepts recursively key-sorted v3 training completion JS
     );
   };
   const completion = recursivelySorted(example.target_body);
+  if (completion.sort === null) delete completion.sort;
 
   assert.deepEqual(
     validateAgenticDsl({

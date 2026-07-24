@@ -11,6 +11,8 @@ import {
   selectConfiguredSageMakerModel,
 } from "../src/lib/agentic-model-provider.js";
 import {
+  DEFAULT_ADAPTER_NAME,
+  DEFAULT_ADAPTER_PATH,
   DEFAULT_INSTANCE_TYPE,
   DEFAULT_MODEL_ID,
   DEFAULT_MODEL_REVISION,
@@ -18,9 +20,10 @@ import {
   buildSageMakerDeployment,
   createSageMakerDeploymentResources,
   isMissingEndpointError,
+  replaceSageMakerEndpoint,
 } from "../scripts/sagemaker-ministral.mjs";
 
-test("SageMaker deployment pins Ministral to one ml.g6.2xlarge text-only worker", () => {
+test("SageMaker deployment pins Ministral to one ml.g5.2xlarge text-only worker", () => {
   const deployment = buildSageMakerDeployment({
     region: "eu-west-1",
     executionRoleArn: "arn:aws:iam::123456789012:role/SageMakerExecutionRole",
@@ -114,6 +117,29 @@ test("SageMaker connector signs the standard invocation endpoint with SigV4", ()
   assert.equal(requestBody.response_format.json_schema.schema.uniqueItems, true);
 });
 
+test("SageMaker deployment loads the trained adapter under the fine-tuned alias", () => {
+  const adapterModelDataUrl =
+    "s3://training-bucket/output/full-job/output/model.tar.gz";
+  const deployment = buildSageMakerDeployment({
+    region: "eu-west-1",
+    executionRoleArn: "arn:aws:iam::123456789012:role/SageMakerExecutionRole",
+    adapterModelDataUrl,
+    timestamp: 1720000000000,
+  });
+  const container = deployment.model.PrimaryContainer;
+
+  assert.equal(container.ModelDataUrl, adapterModelDataUrl);
+  assert.equal(container.Environment.HF_MODEL_ID, undefined);
+  assert.equal(container.Environment.SM_VLLM_MODEL, DEFAULT_MODEL_ID);
+  assert.equal(container.Environment.SM_VLLM_ENABLE_LORA, "true");
+  assert.equal(container.Environment.SM_VLLM_MAX_LORA_RANK, "16");
+  assert.deepEqual(JSON.parse(container.Environment.SM_VLLM_LORA_MODULES), {
+    name: DEFAULT_ADAPTER_NAME,
+    path: DEFAULT_ADAPTER_PATH,
+    base_model_name: DEFAULT_MODEL_ID,
+  });
+});
+
 test("SageMaker setup uses a configured static model instead of remote discovery", () => {
   assert.deepEqual(
     selectConfiguredSageMakerModel({
@@ -196,6 +222,19 @@ test("persisted SageMaker connectors require explicitly dedicated non-expiring c
       }),
     /temporary/,
   );
+  assert.deepEqual(
+    loadPersistentSageMakerConnectorCredentials({
+      SAGEMAKER_CONNECTOR_ACCESS_KEY_ID: "temporary-access",
+      SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY: "temporary-secret",
+      SAGEMAKER_CONNECTOR_SESSION_TOKEN: "temporary-token",
+      SAGEMAKER_CONNECTOR_ALLOW_SESSION_CREDENTIALS: "true",
+    }),
+    {
+      accessKeyId: "temporary-access",
+      secretAccessKey: "temporary-secret",
+      sessionToken: "temporary-token",
+    },
+  );
 });
 
 test("connector cluster settings preserve existing trusted endpoints and private-IP access", () => {
@@ -268,6 +307,10 @@ test("SageMaker deployment validates region and image tag before creating resour
   assert.throws(
     () => buildSageMakerDeployment({ ...base, modelId: " " }),
     /Model ID must be a non-empty value/,
+  );
+  assert.throws(
+    () => buildSageMakerDeployment({ ...base, adapterModelDataUrl: "https://example.com/model.tar.gz" }),
+    /Adapter ModelDataUrl/,
   );
 });
 
@@ -363,6 +406,72 @@ test("SageMaker deployment rolls back all resources when the endpoint waiter fai
       "wait endpoint-in-service",
       "delete-endpoint --region",
       "wait endpoint-deleted",
+      "delete-endpoint-config --region",
+      "delete-model --region",
+    ],
+  );
+});
+
+test("SageMaker maintenance update replaces an endpoint without requesting a second instance", () => {
+  const deployment = buildSageMakerDeployment({
+    region: "eu-west-1",
+    executionRoleArn: "arn:aws:iam::123456789012:role/SageMakerExecutionRole",
+    adapterModelDataUrl: "s3://training-bucket/output/model.tar.gz",
+    timestamp: 1720000000000,
+  });
+  const calls = [];
+  replaceSageMakerEndpoint({
+    region: "eu-west-1",
+    deployment,
+    previousEndpointConfigName: "previous-config",
+    runAws: (args) => calls.push(args),
+  });
+  assert.deepEqual(
+    calls.map((args) => args.slice(1, 3).join(" ")),
+    [
+      "create-model --region",
+      "create-endpoint-config --region",
+      "delete-endpoint --region",
+      "wait endpoint-deleted",
+      "create-endpoint --region",
+      "wait endpoint-in-service",
+    ],
+  );
+});
+
+test("SageMaker maintenance update restores the previous endpoint when replacement startup fails", () => {
+  const deployment = buildSageMakerDeployment({
+    region: "eu-west-1",
+    executionRoleArn: "arn:aws:iam::123456789012:role/SageMakerExecutionRole",
+    adapterModelDataUrl: "s3://training-bucket/output/model.tar.gz",
+    timestamp: 1720000000000,
+  });
+  const calls = [];
+  let inServiceWaits = 0;
+  const runAws = (args) => {
+    calls.push(args);
+    if (args[1] === "wait" && args[2] === "endpoint-in-service" && inServiceWaits++ === 0) {
+      throw new Error("replacement failed");
+    }
+  };
+
+  assert.throws(
+    () =>
+      replaceSageMakerEndpoint({
+        region: "eu-west-1",
+        deployment,
+        previousEndpointConfigName: "previous-config",
+        runAws,
+      }),
+    /replacement failed.*previous endpoint configuration was restored/,
+  );
+  assert.deepEqual(
+    calls.slice(-6).map((args) => args.slice(1, 3).join(" ")),
+    [
+      "delete-endpoint --region",
+      "wait endpoint-deleted",
+      "create-endpoint --region",
+      "wait endpoint-in-service",
       "delete-endpoint-config --region",
       "delete-model --region",
     ],

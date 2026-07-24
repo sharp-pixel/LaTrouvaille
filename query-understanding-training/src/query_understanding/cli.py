@@ -9,6 +9,7 @@ from typing import Annotated
 import typer
 
 from query_understanding.config import load_training_config
+from query_understanding.corpus import write_corpus
 from query_understanding.dataset import ValidationReport, validate_dataset
 from query_understanding.evaluation import evaluate_predictions
 from query_understanding.policy import load_policy
@@ -17,6 +18,7 @@ from query_understanding.training import environment_report, require_supported_p
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_show_locals=False)
 DEFAULT_CONFIG = Path("configs/qlora-5090.yaml")
+DEFAULT_DATA_DIR = Path("data")
 
 
 @app.command("show-config")
@@ -42,6 +44,23 @@ def validate_data(
     typer.echo(json.dumps([_report_dict(report) for report in reports], indent=2, sort_keys=True))
     if not all(report.ok for report in reports):
         raise typer.Exit(1)
+
+
+@app.command("build-data")
+def build_data(
+    output_dir: Annotated[Path, typer.Option("--output-dir", "-o")] = DEFAULT_DATA_DIR,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Verify checked-in JSONL is reproducible without rewriting it."),
+    ] = False,
+) -> None:
+    """Build the deterministic grouped luxury-search train/evaluation corpus."""
+    try:
+        corpus = write_corpus(output_dir, check=check)
+    except ValueError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+    typer.echo(json.dumps(corpus.report(), indent=2, sort_keys=True))
 
 
 @app.command("export-schema")

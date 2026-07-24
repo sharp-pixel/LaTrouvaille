@@ -13,13 +13,11 @@ data:
   eval_file: ../data/eval.jsonl
   policy_file: policy-prototype-v1.yaml
 
-# bitsandbytes 4-bit quantization is CUDA-only. Apple Silicon uses native
-# float16 MPS tensors and applies LoRA adapters to the text backbone.
 quantization:
-  load_in_4bit: false
+  load_in_4bit: true
   quant_type: nf4
-  use_double_quant: false
-  compute_dtype: float16
+  use_double_quant: true
+  compute_dtype: bfloat16
 
 lora:
   rank: 16
@@ -28,25 +26,26 @@ lora:
   target_modules_regex: '^model\.language_model\.layers\.\d+\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))$'
 
 trainer:
-  output_dir: ../artifacts/lora-macos-agentic-v3
+  output_dir: /opt/ml/model/qlora-agentic-v3-smoke
   sequence_length: 2048
   per_device_train_batch_size: 1
   per_device_eval_batch_size: 1
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 2
   gradient_checkpointing: true
   learning_rate: 0.0001
   lr_scheduler_type: cosine
   warmup_ratio: 0.03
-  num_train_epochs: 2
+  num_train_epochs: 1
+  max_steps: 2
   max_grad_norm: 0.3
-  optim: adamw_torch
-  logging_steps: 10
-  save_steps: 250
-  eval_steps: 250
-  save_total_limit: 2
+  optim: paged_adamw_8bit
+  logging_steps: 1
+  save_steps: 2
+  eval_steps: 1000
+  save_total_limit: 1
   seed: 42
-  bf16: false
-  fp16: true
-  tf32: false
+  bf16: true
+  fp16: false
+  tf32: true
   packing: false
   report_to: []

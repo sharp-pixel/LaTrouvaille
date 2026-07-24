@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import platform
 import sys
 from importlib.metadata import PackageNotFoundError, version
@@ -125,7 +126,6 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
             "revision": config.model.revision,
             "dtype": _torch_dtype(config.quantization.compute_dtype, torch),
             "trust_remote_code": config.model.trust_remote_code,
-            "use_cache": False,
             "device_map": {"": 0 if backend == "cuda" else backend},
         },
         per_device_train_batch_size=config.trainer.per_device_train_batch_size,
@@ -136,6 +136,7 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
         lr_scheduler_type=config.trainer.lr_scheduler_type,
         warmup_ratio=config.trainer.warmup_ratio,
         num_train_epochs=config.trainer.num_train_epochs,
+        max_steps=config.trainer.max_steps,
         max_grad_norm=config.trainer.max_grad_norm,
         optim=config.trainer.optim,
         logging_steps=config.trainer.logging_steps,
@@ -168,8 +169,22 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
     )
     _assert_language_model_only_trainables(trainer.model)
     write_run_manifest(config, project_root)
-    trainer.train(resume_from_checkpoint=str(resume_from_checkpoint) if resume_from_checkpoint else None)
+    result = trainer.train(resume_from_checkpoint=str(resume_from_checkpoint) if resume_from_checkpoint else None)
     trainer.save_model(str(config.trainer.output_dir / "adapter"))
+    metrics = dict(result.metrics)
+    if backend == "cuda":
+        metrics.update(
+            {
+                "cuda_device": torch.cuda.get_device_name(0),
+                "cuda_peak_allocated_gib": round(torch.cuda.max_memory_allocated() / 1024**3, 3),
+                "cuda_peak_reserved_gib": round(torch.cuda.max_memory_reserved() / 1024**3, 3),
+            }
+        )
+    (config.trainer.output_dir / "training-metrics.json").write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps({"training_complete": True, **metrics}, sort_keys=True), flush=True)
     return config.trainer.output_dir
 
 
@@ -184,7 +199,7 @@ def _assert_language_model_only_trainables(model: Any) -> None:
     trainable = [name for name, parameter in model.named_parameters() if parameter.requires_grad]
     if not trainable:
         raise RuntimeError("PEFT created no trainable parameters; check target_modules_regex")
-    unexpected = [name for name in trainable if "language_model.model.layers." not in name]
+    unexpected = [name for name in trainable if "model.language_model.layers." not in name]
     if unexpected:
         preview = ", ".join(unexpected[:10])
         raise RuntimeError(f"trainable parameters escaped the text backbone: {preview}")

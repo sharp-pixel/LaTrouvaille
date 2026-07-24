@@ -317,6 +317,18 @@ export function createLiteralQueryPlan(query) {
   };
 }
 
+export function buildBasicLexicalQuery(query) {
+  const literalQuery = String(query ?? "").trim();
+  if (!literalQuery) return { match_all: {} };
+  return {
+    multi_match: {
+      query: literalQuery,
+      fields: ["title", "brand", "canonical_text", "description"],
+      operator: "or",
+    },
+  };
+}
+
 function matchesFacetFilters(product, filters) {
   return Object.entries(filters).every(([key, values]) => !values.length || values.includes(product[key]));
 }

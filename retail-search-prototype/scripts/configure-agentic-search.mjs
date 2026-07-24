@@ -23,7 +23,7 @@ const modelApiKey = process.env.AGENTIC_MODEL_API_KEY || process.env.MISTRAL_API
 const sagemakerRegion =
   process.env.SAGEMAKER_REGION || process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || "eu-west-1";
 const sagemakerEndpoint = process.env.SAGEMAKER_MINISTRAL_ENDPOINT || "la-trouvaille-ministral";
-const sagemakerModel = process.env.SAGEMAKER_MINISTRAL_MODEL || baseModel;
+const sagemakerModel = process.env.SAGEMAKER_MINISTRAL_MODEL || fineTunedModel;
 const structuredOutput = process.env.AGENTIC_STRUCTURED_OUTPUT !== "false";
 const dryRun = process.argv.includes("--dry-run");
 const queryPlannerSystemPrompt = readFileSync(

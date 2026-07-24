@@ -39,6 +39,7 @@ class DatasetSlice(StrEnum):
     INTENT_DISAMBIGUATION = "intent_disambiguation"
     EXACT_LOOKUP = "exact_lookup"
     FILTER_AND_SORT = "filter_and_sort"
+    RANKING_MODE_CONTRAST = "ranking_mode_contrast"
     BROAD_QUERY = "broad_query"
     MAPPING_VARIATION = "mapping_variation"
     ADVERSARIAL_FALLBACK = "adversarial_fallback"

@@ -18,12 +18,12 @@ import {
   buildBasicLexicalQuery,
   createLiteralQueryPlan,
   createQueryUnderstanding,
-  localSearchProducts,
   normalizeText,
   stripQueryControls,
 } from "../src/lib/search.js";
 
 const port = Number(process.env.SEARCH_API_PORT || 8790);
+const host = process.env.SEARCH_API_HOST || "127.0.0.1";
 const index = process.env.OPENSEARCH_ALIAS || process.env.OPENSEARCH_INDEX || "secondhand_items_current";
 const trackTotalHits = parseTrackTotalHits(process.env.OPENSEARCH_TRACK_TOTAL_HITS);
 const queryRewriteEndpoint = process.env.QUERY_REWRITE_ENDPOINT || "http://127.0.0.1:8791/rewrite";
@@ -325,11 +325,15 @@ async function search(payload) {
   // persona fields and resolve the authoritative profile on the server.
   const personaId = typeof payload.personaId === "string" ? payload.personaId.slice(0, 64) : "anonymous";
   const persona = getEffectiveSearchPersona(personaId, queryUnderstandingEnabled);
-  const personaSearchContext = getPersonaSearchContext(persona.id);
-  const personaContext = buildTrustedPersonaContext(personaSearchContext);
   const understanding = queryUnderstandingEnabled
     ? createQueryUnderstanding(query, products)
     : createLiteralQueryPlan(query);
+  const personaCategories = [
+    ...understanding.categories,
+    ...(Array.isArray(filters.category) ? filters.category : []),
+  ];
+  const personaSearchContext = getPersonaSearchContext(persona.id, personaCategories);
+  const personaContext = buildTrustedPersonaContext(personaSearchContext);
   const { filters: effectiveFilters, maxPrice: effectiveMaxPrice } = deriveAgenticServiceConstraints({
     filters,
     maxPrice,
@@ -531,46 +535,8 @@ async function search(payload) {
       warning: agenticError ? `Agentic Search failed; used lexical OpenSearch fallback: ${agenticError.message}` : undefined,
     };
   } catch (error) {
-    const productsFallback = localSearchProducts(products, {
-      query,
-      filters,
-      maxPrice: effectiveMaxPrice,
-      sort,
-      persona,
-      queryUnderstanding: queryUnderstandingEnabled,
-    }).slice(0, size);
-    return {
-      index,
-      source: "local-fallback",
-      tookMs: Date.now() - startedAt,
-      total: productsFallback.length,
-      totalRelation: "eq",
-      queryPlan: {
-        ...understanding,
-        ...personalization("fallback"),
-        queryUnderstanding: { status: queryUnderstandingEnabled ? "enabled" : "bypassed" },
-        dslQuery: lexicalDslQuery,
-        tier2: tier2Rewrite,
-        agentic: {
-          status: agenticError ? "failed" : inactiveAgenticStatus,
-          pipeline: agenticPipeline,
-          error: agenticError?.message || null,
-        },
-      },
-      enhancements: {
-        queryUnderstanding: queryUnderstandingEnabled ? "enabled" : "bypassed",
-        querqy: tier2Rewrite.status,
-        rules: tier2Rewrite.rules || [],
-        tookMs: tier2Rewrite.tookMs,
-        agentic: agenticError ? "failed" : inactiveAgenticStatus,
-        agenticMode,
-        agenticPipeline,
-        agenticError: agenticError?.message || null,
-        dslQuery: agenticDslQuery,
-      },
-      products: productsFallback,
-      warning: [agenticError?.message, error.message].filter(Boolean).join("; "),
-    };
+    const details = [agenticError?.message, error.message].filter(Boolean).join("; ");
+    throw new Error(`OpenSearch search failed: ${details}`);
   }
 }
 
@@ -583,6 +549,8 @@ const server = http.createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/health") {
       await client.info();
+      const indexExists = unwrap(await client.indices.exists({ index }));
+      if (indexExists !== true) throw new Error(`OpenSearch index ${index} is unavailable`);
       send(response, 200, { ok: true, index });
       return;
     }
@@ -598,8 +566,8 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Search API listening on http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`Search API listening on http://${host}:${port}`);
   console.log(`OpenSearch index: ${index}`);
   console.log(`Native Agentic Search: ${agenticMode} (${agenticPipeline})`);
 });

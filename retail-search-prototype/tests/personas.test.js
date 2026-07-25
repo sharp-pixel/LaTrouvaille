@@ -4,6 +4,7 @@ import {
   MAX_PERSONA_QUERY_EXPANSION_LENGTH,
   getEffectiveSearchPersona,
   getPersonaById,
+  getPersonaQueryExpansion,
   getPersonaSearchContext,
   getPersonaSearchRequestIdentity,
   personas,
@@ -14,8 +15,23 @@ test("persona search expansions are bounded and Anonymous remains unprofiled", (
     assert.equal(typeof persona.searchProfile.queryExpansion, "string");
     assert.ok(persona.searchProfile.queryExpansion.length <= MAX_PERSONA_QUERY_EXPANSION_LENGTH);
     assert.ok(Object.isFrozen(persona.searchProfile));
+    assert.ok(Object.isFrozen(persona.searchProfile.categoryQueryExpansions));
+    for (const expansion of Object.values(persona.searchProfile.categoryQueryExpansions)) {
+      assert.ok(expansion.length <= MAX_PERSONA_QUERY_EXPANSION_LENGTH);
+    }
   }
   assert.equal(getPersonaById("anonymous").searchProfile.queryExpansion, "");
+});
+
+test("watch intent selects each named persona's watch preference", () => {
+  const camille = getPersonaById("first-luxury-purchase");
+  const sofia = getPersonaById("fashion-insider");
+  const julien = getPersonaById("watch-collector");
+
+  assert.match(getPersonaQueryExpansion(camille, ["Watches"]), /bracelet jewellery sculptural/);
+  assert.match(getPersonaQueryExpansion(sofia, ["watches"]), /bracelet jewellery sculptural/);
+  assert.match(getPersonaQueryExpansion(julien, ["Watches"]), /traditional dress automatic/);
+  assert.equal(getPersonaQueryExpansion(camille, ["Bags"]), camille.searchProfile.queryExpansion);
 });
 
 test("browser search identity contains only the allowlisted persona ID", () => {
@@ -46,6 +62,10 @@ test("search context includes shopping details but excludes identifying presenta
   assert.equal(context.background, persona.background);
   assert.equal(context.mentalModel, persona.mentalModel);
   assert.equal(context.queryExpansion, persona.searchProfile.queryExpansion);
+  assert.equal(
+    getPersonaSearchContext(persona.id, ["Watches"]).queryExpansion,
+    persona.searchProfile.categoryQueryExpansions.Watches,
+  );
 
   const serialized = JSON.stringify(context);
   assert.equal(serialized.includes(persona.name), false);

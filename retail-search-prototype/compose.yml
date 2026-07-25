@@ -3,16 +3,35 @@ services:
     build:
       context: .
       args:
-        VITE_SEARCH_ENDPOINT: ${VITE_SEARCH_ENDPOINT:-http://127.0.0.1:8790}
+        VITE_SEARCH_ENDPOINT: ${VITE_SEARCH_ENDPOINT:-/api}
         VITE_UBI_ENDPOINT: ${VITE_UBI_ENDPOINT:-http://127.0.0.1:8787/ubi}
-    container_name: maison-reuse-app
+    container_name: la-trouvaille-app
     ports:
       - "5173:80"
+    depends_on:
+      search-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  search-api:
+    build:
+      context: .
+      target: api
+    container_name: la-trouvaille-search-api
+    environment:
+      - OPENSEARCH_URL=http://opensearch:9200
+      - OPENSEARCH_AGENTIC_SEARCH_TIMEOUT_MS=5000
+      - SEARCH_API_HOST=0.0.0.0
+      - SEARCH_API_PORT=8790
+    ports:
+      - "8790:8790"
+    depends_on:
+      - opensearch
     restart: unless-stopped
 
   opensearch:
     image: opensearchproject/opensearch:3.7.0
-    container_name: maison-reuse-opensearch
+    container_name: la-trouvaille-opensearch
     environment:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
@@ -37,7 +56,7 @@ services:
 
   dashboards:
     image: opensearchproject/opensearch-dashboards:3.7.0
-    container_name: maison-reuse-opensearch-dashboards
+    container_name: la-trouvaille-opensearch-dashboards
     environment:
       - OPENSEARCH_HOSTS=["http://opensearch:9200"]
       - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true

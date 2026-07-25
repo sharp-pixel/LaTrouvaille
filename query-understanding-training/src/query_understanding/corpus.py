@@ -96,7 +96,7 @@ PERSONAS: tuple[dict[str, object], ...] = (
     {"id": "anonymous", "version": 1, "mode": "unprofiled"},
     {
         "id": "first-luxury-purchase",
-        "version": 1,
+        "version": 2,
         "archetype": "First luxury purchase",
         "background": "A product designer buying a first pre-loved piece, with a firm EUR 1,500 budget.",
         "mental_model": "A guided boutique: start from the occasion, then validate condition, authenticity, and value.",
@@ -104,7 +104,7 @@ PERSONAS: tuple[dict[str, object], ...] = (
     },
     {
         "id": "fashion-insider",
-        "version": 1,
+        "version": 2,
         "archetype": "Fashion insider",
         "background": (
             "A freelance stylist sourcing distinctive pieces for shoots and clients; fluent in houses and eras."
@@ -116,7 +116,7 @@ PERSONAS: tuple[dict[str, object], ...] = (
     },
     {
         "id": "watch-collector",
-        "version": 1,
+        "version": 2,
         "archetype": "Watch collector",
         "background": (
             "An experienced collector tracking dress watches across Europe and comfortable with resale pricing."
@@ -125,6 +125,12 @@ PERSONAS: tuple[dict[str, object], ...] = (
         "query_expansion": "dress watch reference provenance full set serviced collector steel",
     },
 )
+
+WATCH_QUERY_EXPANSIONS: dict[str, str] = {
+    "first-luxury-purchase": "verified timeless value bracelet jewellery sculptural coil mini oval",
+    "fashion-insider": "rare distinctive bracelet jewellery sculptural coil mini oval",
+    "watch-collector": "traditional dress automatic manual wind leather strap heritage",
+}
 
 
 @dataclass(frozen=True)
@@ -594,8 +600,18 @@ def _build_group(scenario: Scenario) -> list[TrainingExample]:
     examples: list[TrainingExample] = []
     persona_indexes = (3, 0, 1, 2, _stable_int(_split_group_id(scenario)) % len(PERSONAS))
     for variant, persona_index in enumerate(persona_indexes):
-        examples.append(_build_example(scenario, variant, PERSONAS[persona_index]))
+        examples.append(_build_example(scenario, variant, _persona_for_scenario(PERSONAS[persona_index], scenario)))
     return examples
+
+
+def _persona_for_scenario(persona: dict[str, object], scenario: Scenario) -> dict[str, object]:
+    persona_id = persona.get("id")
+    expansion = WATCH_QUERY_EXPANSIONS.get(str(persona_id))
+    query_words = {word.strip(".,?!:;") for word in scenario.base_text_query.lower().replace("-", " ").split()}
+    has_watch_intent = "watches" in scenario.categories or bool({"watch", "watches"} & query_words)
+    if expansion is None or not has_watch_intent:
+        return persona
+    return {**persona, "query_expansion": expansion}
 
 
 def _build_example(scenario: Scenario, variant: int, persona: dict[str, object]) -> TrainingExample:

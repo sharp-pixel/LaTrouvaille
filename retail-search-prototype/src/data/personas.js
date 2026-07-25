@@ -1,10 +1,18 @@
 export const MAX_PERSONA_QUERY_EXPANSION_LENGTH = 120;
 
-function createSearchProfile(queryExpansion) {
+function validateQueryExpansion(queryExpansion) {
   if (typeof queryExpansion !== "string" || queryExpansion.length > MAX_PERSONA_QUERY_EXPANSION_LENGTH) {
     throw new TypeError(`Persona query expansion must be at most ${MAX_PERSONA_QUERY_EXPANSION_LENGTH} characters`);
   }
-  return Object.freeze({ queryExpansion });
+}
+
+function createSearchProfile(queryExpansion, categoryQueryExpansions = {}) {
+  validateQueryExpansion(queryExpansion);
+  Object.values(categoryQueryExpansions).forEach(validateQueryExpansion);
+  return Object.freeze({
+    queryExpansion,
+    categoryQueryExpansions: Object.freeze({ ...categoryQueryExpansions }),
+  });
 }
 
 export const personas = [
@@ -22,7 +30,7 @@ export const personas = [
   },
   {
     id: "first-luxury-purchase",
-    version: 1,
+    version: 2,
     name: "Camille Moreau",
     shortName: "Camille",
     archetype: "First luxury purchase",
@@ -32,11 +40,14 @@ export const personas = [
     mentalModel: "A guided boutique: start from the occasion, then validate condition, authenticity, and value.",
     searchProfile: createSearchProfile(
       "excellent condition very good condition verified timeless versatile value",
+      {
+        Watches: "verified timeless value bracelet jewellery sculptural coil mini oval",
+      },
     ),
   },
   {
     id: "fashion-insider",
-    version: 1,
+    version: 2,
     name: "Sofia Benali",
     shortName: "Sofia",
     archetype: "Fashion insider",
@@ -46,11 +57,14 @@ export const personas = [
     mentalModel: "A living archive: use precise brand, model, material, and season language; favor rarity and freshness.",
     searchProfile: createSearchProfile(
       "rare archive vintage runway editorial limited edition distinctive",
+      {
+        Watches: "rare distinctive bracelet jewellery sculptural coil mini oval",
+      },
     ),
   },
   {
     id: "watch-collector",
-    version: 1,
+    version: 2,
     name: "Julien Laurent",
     shortName: "Julien",
     archetype: "Watch collector",
@@ -60,6 +74,9 @@ export const personas = [
     mentalModel: "A specialist inventory: exact model, condition, provenance, and price are decision fields.",
     searchProfile: createSearchProfile(
       "dress watch reference provenance full set serviced collector steel",
+      {
+        Watches: "traditional dress automatic manual wind leather strap heritage",
+      },
     ),
   },
 ];
@@ -78,9 +95,25 @@ export function getPersonaSearchRequestIdentity(personaId) {
   return { personaId: getPersonaById(personaId).id };
 }
 
+export function getPersonaQueryExpansion(persona, categories = []) {
+  const profile = persona?.searchProfile;
+  if (!profile) return persona?.queryExpansion ?? persona?.query_expansion ?? "";
+
+  const categoryExpansions = profile.categoryQueryExpansions || {};
+  const normalizedCategories = new Set(
+    (Array.isArray(categories) ? categories : [categories])
+      .filter((category) => typeof category === "string")
+      .map((category) => category.trim().toLowerCase()),
+  );
+  const matchingCategory = Object.keys(categoryExpansions).find(
+    (category) => normalizedCategories.has(category.toLowerCase()),
+  );
+  return matchingCategory ? categoryExpansions[matchingCategory] : profile.queryExpansion;
+}
+
 // This is the only persona shape intended for search services or model context.
 // It includes shopping context while deliberately excluding names, demographics, and images.
-export function getPersonaSearchContext(personaId) {
+export function getPersonaSearchContext(personaId, categories = []) {
   const persona = getPersonaById(personaId);
   return {
     personaId: persona.id,
@@ -88,6 +121,6 @@ export function getPersonaSearchContext(personaId) {
     archetype: persona.archetype,
     background: persona.background,
     mentalModel: persona.mentalModel,
-    queryExpansion: persona.searchProfile.queryExpansion,
+    queryExpansion: getPersonaQueryExpansion(persona, categories),
   };
 }

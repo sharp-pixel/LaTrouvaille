@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
-  Bell,
   Check,
   ChevronDown,
   ChevronRight,
@@ -22,7 +21,7 @@ import {
   personas,
 } from "./data/personas.js";
 import { buildLocalPersonalizationPlan } from "./lib/agentic-search.js";
-import { createLiteralQueryPlan, createQueryUnderstanding, localSearchProducts } from "./lib/search.js";
+import { createLiteralQueryPlan, createQueryUnderstanding } from "./lib/search.js";
 import { getRecentUbiEvents, recordUbiEvent, recordUbiQuery } from "./lib/ubi.js";
 
 const SEARCH_ENDPOINT = import.meta.env.VITE_SEARCH_ENDPOINT || "http://127.0.0.1:8790";
@@ -30,31 +29,25 @@ const BRAND_NAME = "La Trouvaille";
 const DEFAULT_MAX_PRICE = 20000;
 const PERSONA_STORAGE_KEY = "la-trouvaille-demo-persona";
 const SORT_OPTIONS = ["Recommended", "Newest", "Lowest price", "Price drop"];
-const featuredSearches = ["formal watch", "maison bellune bag", "silk dress", "ardenne berenice"];
 const discoveryEdits = [
   {
-    title: "Fine watches",
-    query: "formal watch",
-    image: "/assets/products/01-dress-watch.png",
-    meta: "Dress watches, steel classics, collector references",
+    title: "Carried well",
+    query: "soft leather bag",
+    image: "/assets/products/04-black-shoulder-bag.png",
+    meta: "Enduring leather shapes with character",
   },
   {
-    title: "Occasion dresses",
+    title: "After-dark silk",
     query: "silk dress",
     image: "/assets/products/05-silk-maxi-dress.png",
-    meta: "Silk, linen, evening and summer pieces",
+    meta: "Fluid pieces for the long light",
   },
   {
-    title: "Investment bags",
-    query: "ardenne berenice",
-    image: "/assets/products/04-black-shoulder-bag.png",
-    meta: "Ardenne, Maison Bellune, Celenne and daily carry icons",
+    title: "Soft structure",
+    query: "tailored wool",
+    image: "/assets/products/07-wool-blazer.png",
+    meta: "Quiet tailoring with a lived-in ease",
   },
-];
-const homeStats = [
-  ["2M", "unique listings"],
-  ["7", "luxury departments"],
-  ["Daily", "fresh listings"],
 ];
 
 const formatPrice = (price) =>
@@ -66,7 +59,7 @@ const formatResultCount = (count, relation) => {
 };
 
 const formatDslQuery = (dslQuery) => {
-  if (!dslQuery) return "No OpenSearch DSL was executed; these results came from the local fallback.";
+  if (!dslQuery) return "No OpenSearch DSL was executed.";
   try {
     const parsed = typeof dslQuery === "string" ? JSON.parse(dslQuery) : dslQuery;
     return JSON.stringify(parsed, null, 2);
@@ -109,8 +102,9 @@ export function App() {
     products: null,
     personaId: null,
     queryPlan: null,
-    source: "local",
+    source: "pending",
     status: "idle",
+    error: null,
     tookMs: null,
     total: products.length,
     totalRelation: "eq",
@@ -126,10 +120,10 @@ export function App() {
   const searchPersona = getEffectiveSearchPersona(activePersona.id, queryUnderstandingEnabled);
   const localPersonalizationPlan = useMemo(
     () => ({
-      ...buildLocalPersonalizationPlan(localPlan, searchPersona),
+      ...buildLocalPersonalizationPlan(localPlan, searchPersona, filters.category),
       queryUnderstanding: { status: queryUnderstandingEnabled ? "enabled" : "bypassed" },
     }),
-    [localPlan, queryUnderstandingEnabled, searchPersona],
+    [filters.category, localPlan, queryUnderstandingEnabled, searchPersona],
   );
   const activePlan = useMemo(() => {
     const returnedPlan = searchResponse.personaId === searchPersona.id ? searchResponse.queryPlan : null;
@@ -146,31 +140,21 @@ export function App() {
     return popularSearches.filter((item) => item.includes(seed)).slice(0, 6);
   }, [query]);
 
-  const localProducts = useMemo(
-    () => localSearchProducts(products, {
-      query: activeQuery,
-      filters,
-      maxPrice,
-      sort,
-      persona: searchPersona,
-      queryUnderstanding: queryUnderstandingEnabled,
-    }),
-    [activeQuery, filters, maxPrice, queryUnderstandingEnabled, searchPersona, sort],
-  );
-  const sortedProducts = searchResponse.products ?? localProducts;
+  const sortedProducts = searchResponse.products ?? [];
 
   useEffect(() => {
     if (mode !== "results") return undefined;
     const controller = new AbortController();
     const startedAt = performance.now();
     setSearchResponse({
-      products: localProducts,
+      products: [],
       personaId: searchPersona.id,
       queryPlan: localPersonalizationPlan,
-      source: "local",
+      source: "pending",
       status: "loading",
+      error: null,
       tookMs: null,
-      total: localProducts.length,
+      total: 0,
       totalRelation: "eq",
       enhancements: { querqy: "not_called", rules: [] },
     });
@@ -195,40 +179,44 @@ export function App() {
       })
       .then((payload) => {
         if (controller.signal.aborted) return;
+        if (payload.source !== "opensearch") {
+          throw new Error(`Search API returned unsupported source: ${payload.source || "unknown"}`);
+        }
         setSearchResponse({
           products: payload.products || [],
           personaId: searchPersona.id,
-          queryPlan:
-            payload.queryPlan || (payload.source === "local-fallback" ? localPersonalizationPlan : null),
-          source: payload.source || "opensearch",
-          status: payload.source === "local-fallback" ? "degraded" : "ready",
+          queryPlan: payload.queryPlan || null,
+          source: "opensearch",
+          status: "ready",
+          error: null,
           tookMs: payload.tookMs ?? Math.round(performance.now() - startedAt),
           total: payload.total ?? payload.products?.length ?? 0,
           totalRelation: payload.totalRelation || "eq",
           enhancements: payload.enhancements || { querqy: "not_called", rules: [] },
         });
       })
-      .catch(() => {
+      .catch((error) => {
         if (controller.signal.aborted) return;
         setSearchResponse({
-          products: localProducts,
+          products: [],
           personaId: searchPersona.id,
-          queryPlan: localPersonalizationPlan,
-          source: "local",
-          status: "degraded",
+          queryPlan: null,
+          source: "unavailable",
+          status: "error",
+          error: error instanceof Error ? error.message : "Search API unavailable",
           tookMs: Math.round(performance.now() - startedAt),
-          total: localProducts.length,
+          total: 0,
           totalRelation: "eq",
           enhancements: { querqy: "skipped", rules: [] },
         });
       });
 
     return () => controller.abort();
-  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, localProducts, maxPrice, mode, queryUnderstandingEnabled, searchPersona.id, sort]);
+  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, maxPrice, mode, queryUnderstandingEnabled, searchPersona.id, sort]);
 
   useEffect(() => {
     if (mode !== "results") return;
-    if (searchResponse.status === "idle" || searchResponse.status === "loading") return;
+    if (searchResponse.status !== "ready") return;
     if (searchResponse.personaId !== searchPersona.id) return;
     const signature = JSON.stringify({
       activeQuery,
@@ -405,6 +393,7 @@ export function App() {
   return (
     <div className="app-shell">
       <Header
+        mode={mode}
         query={query}
         searchOpen={searchOpen}
         setSearchOpen={setSearchOpen}
@@ -473,6 +462,7 @@ export function App() {
           onOpenPersona={() => openPersonaSelector(mobileMenuButtonRef.current)}
           onClose={() => setMobileNavOpen(false)}
           setMode={setMode}
+          runSearch={runSearch}
         />
       )}
 
@@ -527,6 +517,7 @@ export function App() {
 }
 
 function Header({
+  mode,
   query,
   searchOpen,
   setSearchOpen,
@@ -545,9 +536,6 @@ function Header({
 }) {
   return (
     <header className={`site-header ${searchOpen ? "is-searching" : ""}`}>
-      <a className="top-strip" href="#seller">
-        Ready to sell? Enjoy zero selling fees on your first listing.
-      </a>
       <div className="header-main">
         <button
           ref={menuButtonRef}
@@ -558,17 +546,20 @@ function Header({
         >
           <Menu size={22} />
         </button>
-        <button className="search-trigger" type="button" onClick={() => setSearchOpen(true)}>
-          <Search size={18} />
-          <span>{query || "Search by brand, article..."}</span>
-        </button>
+        {mode !== "home" && (
+          <button className="search-trigger" type="button" onClick={() => setSearchOpen(true)}>
+            <Search size={18} />
+            <span>{query || "Search the collection"}</span>
+          </button>
+        )}
         <button className="brand-mark" type="button" onClick={() => setMode("home")}>
-          {BRAND_NAME}
+          <span className="brand-seal" aria-hidden="true">LT</span>
+          <span className="brand-lockup">
+            <strong>{BRAND_NAME}</strong>
+            <small>Paris · found again</small>
+          </span>
         </button>
         <div className="header-actions">
-          <a className="sell-link" href="#seller">
-            Sell an item
-          </a>
           <button
             className={`query-understanding-toggle ${queryUnderstandingEnabled ? "is-on" : "is-off"}`}
             type="button"
@@ -577,7 +568,7 @@ function Header({
             onClick={onToggleQueryUnderstanding}
           >
             <Sparkles size={15} />
-            <span>Query understanding</span>
+            <span>Smart search</span>
             <i aria-hidden="true">{queryUnderstandingEnabled ? "On" : "Off"}</i>
           </button>
           <button
@@ -591,21 +582,17 @@ function Header({
             <span>{persona.id === "anonymous" ? "Sign in" : persona.shortName}</span>
             <ChevronDown size={14} />
           </button>
-          <button type="button">Sign up</button>
-          <button className="icon-button" type="button" aria-label="Notifications">
-            <Bell size={18} />
-          </button>
           <button className="bag-button" type="button" aria-label={`Open bag, ${cartCount} items`} onClick={onOpenCart}>
             <ShoppingBag size={20} />
-            <span>{cartCount}</span>
+            {cartCount > 0 && <span>{cartCount}</span>}
           </button>
         </div>
       </div>
       <nav className="desktop-nav" aria-label="Primary">
         {navItems.map((item) => (
-          <a key={item} href={`#${item.toLowerCase().replaceAll(" ", "-")}`}>
+          <button key={item} type="button" onClick={() => runSearch(item === "New arrivals" ? "new in" : item)}>
             {item}
-          </a>
+          </button>
         ))}
       </nav>
       {searchOpen && (
@@ -615,7 +602,7 @@ function Header({
             <input
               autoFocus
               value={query}
-              placeholder="Search by brand, article..."
+              placeholder="Describe the piece you have in mind..."
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") runSearch();
@@ -666,15 +653,18 @@ function Header({
 }
 
 function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, setQuery, runSearch }) {
-  const previewProducts = products.slice(0, 6);
+  const previewProducts = products.slice(0, 2);
   const newArrivalProducts = products.slice(96, 104);
 
   return (
     <main className="home-page">
       <section className="home-hero">
         <div className="home-hero-copy">
-          <p className="eyebrow">Pre-loved luxury search</p>
-          <h1>Find the exact piece, not a generic product page.</h1>
+          <p className="eyebrow">A private atlas of remarkable things</p>
+          <h1>The one you were not looking for. Until now.</h1>
+          <p className="hero-intro">
+            Search by memory, mood or detail. La Trouvaille brings singular pieces into view without the endless scroll.
+          </p>
           <form
             className="home-search"
             onSubmit={(event) => {
@@ -685,30 +675,20 @@ function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, set
             <Search size={20} />
             <input
               value={query}
-              placeholder="Search brand, item, style..."
+              placeholder="Try “a small gold watch”"
               onChange={(event) => setQuery(event.target.value)}
             />
             <button type="submit">Search</button>
           </form>
-          <div className="home-searches" aria-label="Featured searches">
-            {featuredSearches.map((item) => (
-              <button key={item} type="button" onClick={() => runSearch(item)}>
-                {item}
-              </button>
-            ))}
-          </div>
-          <div className="home-stats" aria-label="Marketplace scale">
-            {homeStats.map(([value, label]) => (
-              <span key={label}>
-                <strong>{value}</strong>
-                {label}
-              </span>
-            ))}
-          </div>
         </div>
         <div className="home-showcase" aria-label="Featured listings">
           {previewProducts.map((product, index) => (
-            <button key={product.id} type="button" onClick={() => onProduct(product, index + 1)}>
+            <button
+              key={product.id}
+              className={`hero-product hero-product-${index + 1}`}
+              type="button"
+              onClick={() => onProduct(product, index + 1)}
+            >
               <img src={product.image} alt={`${product.brand} ${product.title}`} />
               <span>
                 <strong>{product.brand}</strong>
@@ -719,20 +699,12 @@ function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, set
         </div>
       </section>
 
-      <section className="home-promo">
-        <div>
-          <h2>Up to 250 EUR off first 3 orders</h2>
-          <p>Use code NEW10 and unlock better ones as you go.</p>
-        </div>
-        <button type="button" onClick={() => runSearch("new in")}>
-          Shop new in
-          <ArrowRight size={16} />
-        </button>
-      </section>
-
       <section className="discovery-section">
         <div className="section-head">
-          <h2>Curated starting points</h2>
+          <div>
+            <p className="eyebrow">Three doors into the collection</p>
+            <h2>Begin with a feeling.</h2>
+          </div>
         </div>
         <div className="discovery-grid">
           {discoveryEdits.map((edit) => (
@@ -749,7 +721,10 @@ function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, set
 
       <section className="category-section">
         <div className="section-head">
-          <h2>Shop by category</h2>
+          <div>
+            <p className="eyebrow">A shorter way through</p>
+            <h2>Browse the collection.</h2>
+          </div>
         </div>
         <div className="category-grid">
           {categoryTiles.map((category) => (
@@ -763,32 +738,43 @@ function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, set
 
       <section className="editorial-band">
         <div>
-          <h2>Summer in the city</h2>
-          <p>Dresses, sandals, sunglasses and compact bags selected for warm evenings.</p>
+          <p className="eyebrow">The seasonal note</p>
+          <h2>The blue hour edit</h2>
+          <p>Silk, polished metal and small silhouettes selected for the long light after sunset.</p>
         </div>
         <div className="editorial-links">
-          {["Dresses", "Tops", "Sunglasses", "Sandals", "Bags"].map((item) => (
-            <button key={item} type="button" onClick={() => runSearch(item)}>
-              {item}
+          {[
+            ["Silk after dark", "silk dress"],
+            ["Small bags", "small bag"],
+            ["Polished gold", "gold jewellery"],
+            ["Evening shoes", "evening shoes"],
+          ].map(([label, search]) => (
+            <button key={label} type="button" onClick={() => runSearch(search)}>
+              {label}
             </button>
           ))}
         </div>
       </section>
 
       <ProductCarousel
-        title="Recently listed"
+        title="Newly discovered"
         items={newArrivalProducts}
         favorites={favorites}
         toggleFavorite={toggleFavorite}
         onProduct={onProduct}
       />
       <ProductCarousel
-        title="Now trending"
+        title="Worth a second look"
         items={[...products].reverse().slice(0, 8)}
         favorites={favorites}
         toggleFavorite={toggleFavorite}
         onProduct={onProduct}
       />
+      <footer className="home-footer">
+        <p className="eyebrow">La Trouvaille</p>
+        <h2>Less feed. More find.</h2>
+        <p>Independent wardrobes, singular objects and search that listens before it sorts.</p>
+      </footer>
     </main>
   );
 }
@@ -906,7 +892,17 @@ function ResultsPage({
               )}
             </div>
           </div>
-          {products.length ? (
+          {searchMeta?.status === "loading" ? (
+            <div className="empty-results" aria-live="polite">
+              <h2>Searching OpenSearch</h2>
+              <p>Waiting for the search service to respond.</p>
+            </div>
+          ) : searchMeta?.status === "error" ? (
+            <div className="empty-results" role="alert">
+              <h2>Search unavailable</h2>
+              <p>{searchMeta.error || "The OpenSearch API is not running."}</p>
+            </div>
+          ) : products.length ? (
             <div className="product-grid">
               {products.map((product, index) => (
                 <ProductCard
@@ -941,7 +937,12 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
     .filter((event) => event.type === "event" && event.query_id === queryId)
     .slice(0, 3);
   const recent = queryRecord ? [queryRecord, ...recentInteractions] : recentInteractions;
-  const sourceLabel = searchMeta?.source === "opensearch" ? "OpenSearch" : "Local fallback";
+  const sourceLabel =
+    searchMeta?.source === "opensearch"
+      ? "OpenSearch"
+      : searchMeta?.status === "error"
+        ? "Unavailable"
+        : "Pending";
   return (
     <section className="ubi-panel" aria-label="User behavior telemetry">
       <div>
@@ -1229,6 +1230,7 @@ function MobileNav({
   onOpenPersona,
   onClose,
   setMode,
+  runSearch,
 }) {
   return (
     <div className="drawer-backdrop" onClick={onClose}>
@@ -1276,9 +1278,16 @@ function MobileNav({
           <b>{queryUnderstandingEnabled ? "On" : "Off"}</b>
         </button>
         {navItems.map((item) => (
-          <a href={`#${item}`} key={item} onClick={onClose}>
+          <button
+            type="button"
+            key={item}
+            onClick={() => {
+              runSearch(item === "New arrivals" ? "new in" : item);
+              onClose();
+            }}
+          >
             {item}
-          </a>
+          </button>
         ))}
       </aside>
     </div>

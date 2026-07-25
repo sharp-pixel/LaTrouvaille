@@ -33,7 +33,7 @@ def test_source_row_becomes_completion_only_conversation(config: TrainingConfig,
     assert "Question: Normalized shopper request:" in prompt[1]["content"]
     assert '"id":"watch-collector"' in prompt[1]["content"]
     assert (
-        '"query_expansion":"dress watch reference provenance full set serviced collector steel"' in prompt[1]["content"]
+        '"query_expansion":"traditional dress automatic manual wind leather strap heritage"' in prompt[1]["content"]
     )
     user_content = prompt[1]["content"]
     assert isinstance(user_content, str)
@@ -57,9 +57,18 @@ def test_canonical_json_is_stable() -> None:
 
 def test_fixtures_use_canonical_persona_contexts(config: TrainingConfig, policy: CompilerPolicy) -> None:
     expected_expansions = {
-        "first-luxury-purchase": "excellent condition very good condition verified timeless versatile value",
-        "fashion-insider": "rare archive vintage runway editorial limited edition distinctive",
-        "watch-collector": "dress watch reference provenance full set serviced collector steel",
+        "first-luxury-purchase": {
+            "default": "excellent condition very good condition verified timeless versatile value",
+            "watches": "verified timeless value bracelet jewellery sculptural coil mini oval",
+        },
+        "fashion-insider": {
+            "default": "rare archive vintage runway editorial limited edition distinctive",
+            "watches": "rare distinctive bracelet jewellery sculptural coil mini oval",
+        },
+        "watch-collector": {
+            "default": "dress watch reference provenance full set serviced collector steel",
+            "watches": "traditional dress automatic manual wind leather strap heritage",
+        },
     }
     seen_ids: set[str] = set()
     anonymous_examples = 0
@@ -102,9 +111,20 @@ def test_fixtures_use_canonical_persona_contexts(config: TrainingConfig, policy:
                 assert persona == {"id": "anonymous", "version": 1, "mode": "unprofiled"}
                 assert not should or "multi_match" not in should[0]
                 continue
-            assert persona["query_expansion"] == expected_expansions[persona_id]
+            assert persona["version"] == 2
+            has_watch_filter = any(
+                clause == {"term": {"category": "watches"}}
+                or (isinstance(clause.get("terms"), dict) and "watches" in clause["terms"].get("category", []))
+                for clause in contract["filter"]
+            )
+            query_words = {
+                word.strip(".,?!:;") for word in contract["base_text_query"].lower().replace("-", " ").split()
+            }
+            expansion_key = "watches" if has_watch_filter or {"watch", "watches"} & query_words else "default"
+            expected_expansion = expected_expansions[persona_id][expansion_key]
+            assert persona["query_expansion"] == expected_expansion
             assert should[0]["multi_match"] == {
-                "query": expected_expansions[persona_id],
+                "query": expected_expansion,
                 "fields": ["title^5", "brand^3", "canonical_text^3", "description"],
                 "operator": "or",
                 "boost": 0.35,

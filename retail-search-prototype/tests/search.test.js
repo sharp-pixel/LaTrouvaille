@@ -9,6 +9,7 @@ import {
   parseMaxPrice,
   stripQueryControls,
 } from "../src/lib/search.js";
+import { getPersonaById } from "../src/data/personas.js";
 
 test("basic lexical query applies no query understanding or scoring recipe", () => {
   assert.deepEqual(buildBasicLexicalQuery("dress watch under 1000 newest"), {
@@ -256,6 +257,43 @@ test("persona profile terms softly boost local relevance without becoming filter
     ["editorial", "generic"],
   );
   assert.equal(localSearchProducts([generic, editorial], { ...options, persona: null }).length, 2);
+});
+
+test("watch-specific persona preferences reorder generic watch results", () => {
+  const braceletWatch = {
+    ...items[0],
+    id: "bracelet-watch",
+    title: "Feline bracelet watch",
+    category: "Watches",
+    canonical_text: "MAISON AURELLE Feline bracelet watch Watches Steel Gold",
+    reasons: ["Luxury jewellery", "Sculptural bracelet"],
+    score: 50,
+  };
+  const traditionalWatch = {
+    ...items[0],
+    id: "traditional-watch",
+    title: "Tradition leather strap watch",
+    category: "Watches",
+    canonical_text: "BREGONNE Tradition leather strap watch Watches Gold Silver",
+    reasons: ["Dress watch", "Mechanical style"],
+    score: 50,
+  };
+  const options = { query: "watch", filters: {}, maxPrice: 20000, sort: "Recommended" };
+
+  assert.deepEqual(
+    localSearchProducts([braceletWatch, traditionalWatch], {
+      ...options,
+      persona: getPersonaById("first-luxury-purchase"),
+    }).map(({ id }) => id),
+    ["bracelet-watch", "traditional-watch"],
+  );
+  assert.deepEqual(
+    localSearchProducts([braceletWatch, traditionalWatch], {
+      ...options,
+      persona: getPersonaById("watch-collector"),
+    }).map(({ id }) => id),
+    ["traditional-watch", "bracelet-watch"],
+  );
 });
 
 test("local explicit sorts break equal primary values by computed relevance", () => {

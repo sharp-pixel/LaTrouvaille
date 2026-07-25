@@ -1,4 +1,5 @@
 import { deriveEffectiveSort, stripQueryControls } from "./search.js";
+import { getPersonaQueryExpansion } from "../data/personas.js";
 
 export { deriveEffectiveSort } from "./search.js";
 
@@ -188,7 +189,7 @@ function boundedPersonaText(value, field, maxLength) {
   return normalized;
 }
 
-export function buildTrustedPersonaContext(persona = {}) {
+export function buildTrustedPersonaContext(persona = {}, categories = []) {
   const rawId = persona?.id ?? persona?.personaId ?? "anonymous";
   const id = boundedPersonaText(rawId, "id", MAX_PERSONA_ID_LENGTH);
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
@@ -199,7 +200,7 @@ export function buildTrustedPersonaContext(persona = {}) {
   if (!Number.isInteger(version) || version < 1 || version > 1000) {
     throw new Error("Trusted persona version must be an integer between 1 and 1000");
   }
-  const rawExpansion = persona?.searchProfile?.queryExpansion ?? persona?.queryExpansion ?? persona?.query_expansion ?? "";
+  const rawExpansion = getPersonaQueryExpansion(persona, categories);
   if (id === "anonymous" || rawExpansion === "") {
     return Object.freeze({ id: "anonymous", version: 1, mode: "unprofiled" });
   }
@@ -245,9 +246,13 @@ export function buildPersonalizedRewrite(baseTextQuery, persona) {
   return context.mode === "unprofiled" ? base : `${base} ${context.query_expansion}`.trim();
 }
 
-export function buildLocalPersonalizationPlan(queryPlan = {}, persona) {
+export function buildLocalPersonalizationPlan(queryPlan = {}, persona, selectedCategories = []) {
   const basePlan = queryPlan && typeof queryPlan === "object" && !Array.isArray(queryPlan) ? queryPlan : {};
-  const context = buildTrustedPersonaContext(persona);
+  const personaCategories = [
+    ...(Array.isArray(basePlan.categories) ? basePlan.categories : []),
+    ...(Array.isArray(selectedCategories) ? selectedCategories : []),
+  ];
+  const context = buildTrustedPersonaContext(persona, personaCategories);
   const baseRewrite = String(basePlan.rewritten || "").replace(/\s+/g, " ").trim();
   const personalizedRewrite =
     context.mode === "unprofiled" ? baseRewrite : `${baseRewrite} ${context.query_expansion}`.trim();

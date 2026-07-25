@@ -16,6 +16,20 @@ ENV VITE_UBI_ENDPOINT=$VITE_UBI_ENDPOINT
 
 RUN npm run build
 
+FROM build AS api
+
+COPY scripts ./scripts
+
+ENV SEARCH_API_HOST=0.0.0.0
+ENV SEARCH_API_PORT=8790
+
+EXPOSE 8790
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=6 \
+  CMD wget --quiet --tries=1 --spider http://127.0.0.1:8790/health || exit 1
+
+CMD ["node", "scripts/search-api.mjs"]
+
 FROM nginx:1.29-alpine AS runtime
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf

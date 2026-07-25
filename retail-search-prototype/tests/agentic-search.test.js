@@ -386,7 +386,7 @@ test("client-local fallback plan preserves the effective persona rewrite and com
   assert.equal(plan.rewritten, plan.personalizedRewrite);
   assert.deepEqual(plan.personalization, {
     personaId: "fashion-insider",
-    personaVersion: 1,
+    personaVersion: 2,
     status: "fallback",
     query: `Bags ${persona.searchProfile.queryExpansion}`,
   });
@@ -402,6 +402,21 @@ test("client-local fallback plan preserves the effective persona rewrite and com
     status: "unprofiled",
     query: "Bags",
   });
+});
+
+test("client-local fallback plan uses category-specific persona preferences", () => {
+  const persona = getPersonaById("fashion-insider");
+  const plan = buildLocalPersonalizationPlan(
+    { rewritten: "Watches" },
+    persona,
+    ["Watches"],
+  );
+
+  assert.equal(
+    plan.personalizedRewrite,
+    `Watches ${persona.searchProfile.categoryQueryExpansions.Watches}`,
+  );
+  assert.equal(plan.personalization.personaVersion, 2);
 });
 
 test("unknown client personas resolve to Anonymous before entering trusted runtime context", () => {
@@ -660,7 +675,7 @@ test("runtime validator accepts recursively key-sorted v3 training completion JS
       size: 24,
       trackTotalHits: 10000,
       understanding: { phraseIntents: [{ label: "Dress watch", matchedPhrase: "formal watch" }] },
-      persona: getPersonaSearchContext("watch-collector"),
+      persona: getPersonaSearchContext("watch-collector", ["Watches"]),
     }),
     completion,
   );

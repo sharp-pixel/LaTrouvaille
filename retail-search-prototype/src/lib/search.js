@@ -1,3 +1,5 @@
+import { getPersonaQueryExpansion } from "../data/personas.js";
+
 const GENERIC_TERMS = new Set([
   "a",
   "an",
@@ -385,8 +387,8 @@ function scoreProduct(product, understanding, selectedFilters) {
   return score;
 }
 
-function scorePersonaAffinity(product, persona) {
-  const expansion = persona?.searchProfile?.queryExpansion;
+function scorePersonaAffinity(product, persona, categories) {
+  const expansion = getPersonaQueryExpansion(persona, categories);
   if (!expansion) return 0;
 
   const terms = [
@@ -416,13 +418,18 @@ export function localSearchProducts(items, { query, filters, maxPrice, sort, per
   const requestedPriceLimit = Number(maxPrice) || 20000;
   const priceLimit = Math.min(requestedPriceLimit, understanding.priceMax ?? requestedPriceLimit);
   const effectiveSort = queryUnderstanding ? deriveEffectiveSort(query, sort) : sort;
+  const personaCategories = [
+    ...understanding.categories,
+    ...(Array.isArray(filters?.category) ? filters.category : []),
+  ];
   const filtered = items
     .filter((item) => matchesFacetFilters(item, filters))
     .filter((item) => item.price <= priceLimit)
     .filter((item) => matchesQuery(item, understanding))
     .map((product) => ({
       ...product,
-      computedScore: scoreProduct(product, understanding, filters) + scorePersonaAffinity(product, persona),
+      computedScore:
+        scoreProduct(product, understanding, filters) + scorePersonaAffinity(product, persona, personaCategories),
     }));
 
   if (effectiveSort === "Lowest price") {

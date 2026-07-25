@@ -92,11 +92,11 @@ test("UBI canonicalizes a client-local fallback plan without persisting baseRewr
 
   assert.deepEqual(compact, {
     rewritten: "Bags",
-    personalization: {
-      personaId: "fashion-insider",
-      personaVersion: 1,
-      status: "fallback",
-    },
+      personalization: {
+        personaId: "fashion-insider",
+        personaVersion: 2,
+        status: "fallback",
+      },
   });
   assert.equal("baseRewrite" in compact, false);
   assert.equal("personalizedRewrite" in compact, false);

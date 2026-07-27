@@ -23,3 +23,21 @@ test("demo catalogue keeps an even, small set of seller variants", () => {
   assert.equal(listingsByProduct.size, productSpecs.length);
   assert.deepEqual([...listingsByProduct.values()], Array(productSpecs.length).fill(DEMO_LISTINGS_PER_PRODUCT));
 });
+
+test("every listing has a searchable gender affinity", () => {
+  const affinities = new Set(products.map((product) => product.genderAffinity));
+
+  assert.deepEqual([...affinities].sort(), ["men", "unisex", "women"]);
+  for (const product of products) {
+    assert.match(product.canonical_text, new RegExp(`\\b${product.genderAffinity}\\b`));
+  }
+});
+
+test("watch gender affinity follows product size and jewellery styling", () => {
+  const affinityByTitle = Object.fromEntries(products.map((product) => [product.title, product.genderAffinity]));
+
+  assert.equal(affinityByTitle["Cadre Francais steel watch"], "women");
+  assert.equal(affinityByTitle["Feline bracelet watch"], "women");
+  assert.equal(affinityByTitle["Evermark steel watch"], "unisex");
+  assert.equal(affinityByTitle["Viper Coil watch"], "women");
+});

@@ -8,12 +8,12 @@ This prototype implements a search experience for a second-hand luxury marketpla
 - High relevance sensitivity: small wording differences matter for watches, jewelry, dresses, bags, and other luxury categories.
 - Low latency: the target customer-facing search path is 200 ms end to end, including query understanding and any lightweight reranking.
 
-The current implementation uses React for the retail experience, a Node search API as the critical-path service, OpenSearch 3.7.0 with native Agentic Search as the primary query-planning and retrieval engine, a deterministic lexical OpenSearch fallback, a local Querqy-style rewrite service for that fallback, and UBI event capture for relevance feedback. A native flow agent uses `QueryPlanningTool` with the fine-tuned retail model when its served alias is available and the pinned base model otherwise.
+The current implementation uses React for the retail experience, a Node search API as the critical-path service, OpenSearch 3.7.0 with native Agentic Search as the required natural-language query-planning and retrieval engine, a shopper-controlled literal lexical bypass, and UBI event capture for relevance feedback. A native flow agent uses `QueryPlanningTool` with the fine-tuned retail model when its served alias is available and the pinned base model otherwise.
 
 ## Goals
 
 - Return relevant, faceted product results for a catalogue of 2 million unique second-hand listings.
-- Preserve search availability when relevance enhancement systems are unavailable.
+- Fail visibly instead of silently changing retrieval semantics when Agentic Search is unavailable.
 - Capture query and interaction telemetry for relevance debugging and future Search Relevance Workbench workflows.
 - Support phrase-level query understanding for ambiguous luxury terms, such as `dress watch`, where token-level interpretation is incorrect.
 - Keep the prototype runnable locally with Docker, OpenSearch Dashboards, and simple Node services.
@@ -28,8 +28,8 @@ flowchart LR
 
   SearchAPI --> OpenSearch["OpenSearch 3.7.0\nAgentic Search :9200"]
   OpenSearch --> Planner["Flow agent + QueryPlanningTool\nfine-tune or base model"]
-  SearchAPI -. agentic failure .-> Tier1QU["Deterministic lexical query\nin-process JS"]
-  Tier1QU -. 20 ms timeout .-> Rewriter["Tier-2 query rewriter\nQuerqy-style service :8791"]
+  SearchAPI -. explicit UI bypass .-> Lexical["Literal lexical query\nOpenSearch multi_match"]
+  SearchAPI -. agentic failure .-> Error["HTTP 503\nno results"]
 
   UBICollector -. optional forwarding .-> UBIIndexes["UBI OpenSearch indexes\nubi_queries / ubi_events"]
   OpenSearch --> Dashboards["OpenSearch Dashboards 3.7.0\n:5601"]
@@ -44,11 +44,12 @@ flowchart LR
 | Tier | Component | Customer journey impact | Current behavior |
 | --- | --- | --- | --- |
 | Tier 1 | React app | Blocking | If unavailable, shoppers cannot search or browse. |
-| Tier 1 | Search API | Blocking for full search | If unavailable, the browser falls back to a bounded local preview catalogue. |
-| Tier 1 | OpenSearch catalogue index | Blocking for full search | Search API falls back to local preview data, but this is a degraded prototype path only. |
-| Tier 1 | Native Agentic Search flow agent | Blocking for the primary natural-language path | OpenSearch plans the DSL with `QueryPlanningTool`; the Search API retries with deterministic lexical DSL on failure or timeout. |
-| Tier 1 | In-process query understanding | Fail-open retrieval path | Compiles the lexical OpenSearch retry and powers browser fallback. |
-| Tier 2 | Query rewriter / Querqy-style service | Non-blocking | Search API calls it with a tight timeout and continues when it is slow, down, or has no rule. |
+| Tier 1 | Search API | Blocking for full search | If unavailable, the browser shows an explicit error and no results. |
+| Tier 1 | OpenSearch catalogue index | Blocking for full search | If unavailable, the Search API returns HTTP 503 and no results. |
+| Tier 1 | Native Agentic Search flow agent | Blocking for natural-language search | OpenSearch plans the DSL with `QueryPlanningTool`; any pipeline, inference, or validation failure returns HTTP 503. |
+| Tier 1 | In-process query understanding | Planner and explanatory context | Prepares bounded context for the agentic request and the UI; it is not an outage retrieval path. |
+| Tier 1 | Literal lexical bypass | Shopper controlled | Runs only when the shopper disables Query understanding. |
+| Tier 2 | Query rewriter / Querqy-style service | Non-blocking | Remains an optional experimental service and is not invoked on the successful agentic path. |
 | Tier 2 | UBI collector | Non-blocking | Frontend posts best-effort telemetry and catches failures. |
 | Tier 2 | UBI OpenSearch indexes | Non-blocking | Improve observability and relevance tuning but do not block search. |
 | Tier 2 | OpenSearch Dashboards | Non-blocking | Operational and relevance analysis surface only. |
@@ -63,8 +64,6 @@ sequenceDiagram
   participant UI as React App
   participant API as Search API
   participant LLM as Flow Agent / QueryPlanningTool
-  participant QU as Lexical Fallback
-  participant QR as Tier-2 Rewriter
   participant OS as OpenSearch
   participant UBI as UBI Collector
 
@@ -73,15 +72,12 @@ sequenceDiagram
   API->>OS: agentic query + query fields + pipeline
   OS->>LLM: question + mapping + planner prompt
   LLM-->>OS: generated OpenSearch request body
-  alt Agentic search succeeds
+  alt Agentic search succeeds and validates
     OS-->>API: Hits, generated DSL context, timing
-  else Agentic search fails or times out
-    API->>QU: Compile deterministic lexical query
-    API-->>QR: Optional rewrite with 20 ms timeout
-    API->>OS: Bool query with filters and rank features
-    OS-->>API: Hits, total relation, took
+    API-->>UI: Products, query plan, enhancements, timing
+  else Agentic search fails, times out, or is invalid
+    API-->>UI: HTTP 503, explicit error, no products
   end
-  API-->>UI: Products, query plan, enhancements, timing
   UI-->>UBI: Best-effort query/event records
 ```
 
@@ -93,7 +89,7 @@ Current catalogue behavior:
 
 - `DEMO_CATALOG_SIZE`: 138 generated listings, covering all 69 product templates twice.
 - `TARGET_CATALOG_SIZE`: defaults to the demo size for local OpenSearch indexing.
-- `PREVIEW_CATALOG_SIZE`: uses the same balanced demo dataset for the browser/local fallback.
+- `PREVIEW_CATALOG_SIZE`: uses the same balanced demo dataset for homepage previews.
 - `SCALE_CATALOG_SIZE`: 2,000,000 listings for explicit scale tests.
 - Duplicate-looking items are intentional: each listing has its own seller, condition, price, country, size, score, and listing date.
 - Item IDs use stable listing IDs such as `MR-0000001`.
@@ -113,17 +109,17 @@ OpenSearch index:
 
 ## Query Understanding
 
-The primary path sends an OpenSearch `agentic` query through `secondhand-agentic-search`. Its flow agent uses the native `QueryPlanningTool`, the index mapping, an explicit query-field allowlist, and the exact system/user prompt assets used during fine-tuning. Deterministic understanding first merges safe category/material inference and the parsed price ceiling with explicit UI facets, and derives newest/lowest-price/price-drop intent when the UI remains on Recommended. The browser supplies only an active `personaId`; the API resolves the authoritative allowlisted profile and excludes names, demographics, and images. The service then includes the filters, exact result size, total-hit cap, sort mode, canonical `base_text_query`, deterministic `text_operator`, and bounded shopping-relevant persona context in a compact immutable contract inside the planner input. The pipeline's `agentic_context` response processor returns the generated DSL for validation, UBI, and debugging.
+The primary path sends an OpenSearch `agentic` query through `secondhand-agentic-search`. Its flow agent uses the native `QueryPlanningTool`, the index mapping, an explicit query-field allowlist, and the exact system/user prompt assets used during fine-tuning. The browser supplies only an active `personaId`; the API resolves the authoritative allowlisted profile and excludes names, demographics, and images. The planner input contains raw shopper wording plus trusted explicit UI filters, `ui_max_price`, exact result size, total-hit cap, sort mode, and bounded shopping-relevant persona context. The OpenSearch-side GenAI prompt derives the core text query, effective price ceiling, and gender-affinity filter; the API does not precompute those rules. The pipeline's `agentic_context` response processor returns the generated DSL for structural validation, UBI, and debugging.
 
-The v3 planner keeps the complete base query as the only required text clause. Profiled personas add exactly one optional `multi_match` scoring clause with a fixed `0.35` boost before the recommended quality/freshness/seller features; Anonymous adds nothing. Explicit sort modes keep the persona signal only as a score tie-break. Runtime validation rejects a changed expansion, boost, placement, hard constraint, base query, or ranking recipe, and both lexical and local fallbacks apply the same optional persona signal.
+The v3 planner keeps the complete base query as the only required text clause. Profiled personas add exactly one optional `multi_match` scoring clause with a fixed `0.35` boost before the recommended quality/freshness/seller features; Anonymous adds nothing. Explicit sort modes keep the persona signal only as a score tie-break. Runtime validation rejects a changed expansion, boost, placement, hard constraint, base query, or ranking recipe.
 
 An end-to-end capture against OpenSearch 3.7 verified the native training input shape: the tool supplies the mapping source with its `_doc` wrapper and serializes both mapping and query fields as JSON string literals before prompt substitution. The offline objective reproduces that representation rather than training on a cleaner but serving-inaccurate prompt.
 
-`AgenticQueryTranslator` replaces the incoming search body with the planner output while preserving the service-owned `_source` and `ext`. The planner therefore owns the complete executable body—`size`, `track_total_hits`, `query`, and any requested `sort`. If QueryPlanningTool silently uses its registered sentinel fallback, or the returned DSL misses a required constraint, the Search API discards that result and retries with deterministic lexical DSL.
+`AgenticQueryTranslator` replaces the incoming search body with the planner output while preserving the service-owned `_source` and `ext`. The planner therefore owns the complete executable body—`size`, `track_total_hits`, `query`, and any requested `sort`. If QueryPlanningTool silently uses its registered sentinel fallback, or the returned DSL misses a required constraint, the Search API returns HTTP 503 and no catalogue results.
 
-That response validation happens after the generated query executes. It protects result correctness and drives fallback, but it cannot prevent an untrusted planner from consuming cluster resources. A production deployment must treat the model and connector as trusted execution inputs and add OpenSearch-side permissions, query limits, timeouts, and resource isolation; an application response validator is not a query sandbox.
+That response validation happens after the generated query executes. It protects result correctness, but it cannot prevent an untrusted planner from consuming cluster resources. A production deployment must treat the model and connector as trusted execution inputs and add OpenSearch-side permissions, query limits, timeouts, and resource isolation; an application response validator is not a query sandbox.
 
-Deterministic query understanding in `src/lib/search.js` is reused by both the browser fallback and the Search API's lexical OpenSearch retry.
+Deterministic query understanding in `src/lib/search.js` provides bounded planner context and an immediate explanatory plan for the UI while Agentic Search is running. It does not execute an outage fallback.
 
 It extracts:
 
@@ -143,31 +139,13 @@ The phrase-intent layer handles cases where token-level matching is misleading. 
 | `suit watch` | Dress watch | A watch style, not clothing. |
 | `silk dress` | Dresses + Silk | Normal category/material interpretation should still work. |
 
-On the fail-open path, the Search API turns this deterministic query plan into OpenSearch filters, must clauses, should boosts, and rank features.
+When the shopper explicitly disables Query understanding, the Search API executes a literal lexical OpenSearch query. It is not used as an agentic outage fallback.
 
 ## Ranking And Retrieval
 
 The primary retrieval path is native Agentic Search. It passes the shopper request, required runtime constraints, desired sort, and mapped query fields to OpenSearch, which translates the `agentic` clause into DSL and executes it. The configuration script uses a flow agent because this catalogue has a known index and does not need conversation memory or multi-tool orchestration.
 
-The deterministic lexical retry remains intentionally lightweight:
-
-1. Apply hard filters:
-   - `availability = active`
-   - price ceiling
-   - selected facets
-   - Tier-1 inferred category/material filters where no explicit user facet overrides them
-   - optional Tier-2 rewrite filters
-2. Apply required text matching:
-   - brand match when brand intent is detected
-   - residual tokens with `operator: and`
-3. Apply scoring boosts:
-   - one bounded persona expansion for a profiled shopper
-   - quality, freshness, and seller rank features
-   - brand/title phrase matches
-   - broad multi-field lexical query match
-   - Tier-1 phrase-intent boosts
-   - optional Tier-2 synonym, boost, and burial rules
-4. Return source fields for UI rendering.
+The shopper-controlled lexical bypass is intentionally literal: one unboosted `multi_match` over the shopper text with OR semantics and only `title`, `brand`, `canonical_text`, and `description`. Availability, the explicit UI price ceiling, and selected UI facets are applied separately through `post_filter`; the selected explicit sort is preserved. It adds no inferred intent, persona scoring, phrase boosts, rank features, or Tier-2 rewrites.
 
 The API caps `track_total_hits` at 10,000 by default. Broad queries therefore display lower-bound counts such as `10,000+`, which protects latency. Exact counts are treated as a Tier-2 analytics concern.
 
@@ -190,7 +168,7 @@ Current rules live in `config/querqy-tier2-rules.json`. Example rules include:
 - `montreval-celestine`
 - `leather-boots`
 
-Production recommendation: replace the local service with standalone Querqy/Querqy Unplugged behind the same API boundary. Keep the Search API fail-open behavior.
+Production recommendation: replace the local service with standalone Querqy/Querqy Unplugged before reintroducing it to a serving path. It must not become a fallback for failed Agentic Search.
 
 ## UBI And Relevance Feedback
 
@@ -252,14 +230,14 @@ Local development:
 - OpenSearch: `http://127.0.0.1:9200`
 - OpenSearch Dashboards: `http://127.0.0.1:5601`
 
-Docker currently runs OpenSearch and Dashboards only. Node services run directly via npm scripts.
+Docker Compose runs the static React app, Search API, OpenSearch, and Dashboards. Optional model serving and UBI collection remain separately managed.
 
 Production direction:
 
 - Run React as a static app or edge-served frontend.
 - Run the Search API as a horizontally scalable stateless service.
 - Run OpenSearch as a managed or clustered service with multiple shards/replicas and index lifecycle procedures.
-- Optionally run the pinned text-only Ministral planner on a SageMaker `ml.g5.2xlarge` real-time endpoint. OpenSearch invokes it through a least-privilege SigV4 connector; the deterministic lexical query remains the runtime fail-open path.
+- Optionally run the pinned text-only Ministral planner on a SageMaker `ml.g5.2xlarge` real-time endpoint. OpenSearch invokes it through a least-privilege SigV4 connector; agentic failures return HTTP 503 without a lexical retry.
 - Run Querqy/rewriter as a separate Tier-2 service with short timeouts and circuit breakers.
 - Run UBI ingestion as a separate async pipeline with buffering.
 - Keep Dashboards and Search Relevance Workbench off the serving path.
@@ -268,12 +246,12 @@ Production direction:
 
 | Failure | Current behavior | Production expectation |
 | --- | --- | --- |
-| Agentic pipeline/model unavailable | Search API retries with deterministic lexical OpenSearch DSL and records the fallback. | Same behavior, plus circuit breaker, cache, and separate model/pipeline SLOs. |
+| Agentic pipeline/model unavailable | Search API returns HTTP 503 with the underlying error and no results. | Same fail-closed behavior, plus circuit breaker and separate model/pipeline SLOs. |
 | Query rewriter down | Search API marks rewrite as `skipped` and searches normally. | Same behavior, plus circuit breaker and metrics. |
 | Query rewriter slow | Search API times out and searches normally. | Same behavior with strict SLO monitoring. |
 | UBI collector down | Frontend catches errors and continues. | Same behavior, with local/session buffering if useful. |
-| OpenSearch down | Search API returns local preview fallback. | Production should use HA OpenSearch; local preview is prototype-only. |
-| Search API down | Frontend falls back to local preview. | Production should use redundant API instances; browser fallback is not sufficient. |
+| OpenSearch down | Search API returns HTTP 503 and no results. | Production should use HA OpenSearch while preserving explicit failure semantics. |
+| Search API down | Frontend shows an explicit error and no results. | Production should use redundant API instances. |
 | Dashboards down | No customer impact. | Same. |
 
 ## Current Limitations
@@ -313,7 +291,7 @@ Production direction:
 | Area | File |
 | --- | --- |
 | React app | `src/App.jsx` |
-| Query understanding and local fallback | `src/lib/search.js` |
+| Query understanding and UI planning | `src/lib/search.js` |
 | UBI frontend client | `src/lib/ubi.js` |
 | Catalogue generator | `src/data/catalog.js` |
 | Search API | `scripts/search-api.mjs` |

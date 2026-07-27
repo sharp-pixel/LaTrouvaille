@@ -119,7 +119,7 @@ test("shared control cleanup keeps lexical and local fallback browse-only querie
     localSearchProducts(items, { query: "under 150", filters: {}, maxPrice: 20000, sort: "Recommended" }).map(
       ({ id }) => id,
     ),
-    ["newest-cheapest"],
+    ["middle", "newest-cheapest", "older-drop"],
   );
 
   const newest = localSearchProducts(items, {
@@ -183,8 +183,8 @@ test("price parsing and cleanup share the same supported control grammar", () =>
       filters: {},
       maxPrice: 20000,
       sort: "Recommended",
-    }),
-    [],
+    }).map(({ id }) => id),
+    ["middle", "newest-cheapest", "older-drop"],
   );
 });
 
@@ -222,6 +222,43 @@ test("shared control cleanup removes conversational scaffolding before fallback 
 test("specific multi-word materials shadow only overlapping generic material matches", () => {
   assert.deepEqual(createQueryUnderstanding("white gold ring", items).materials, ["White gold"]);
   assert.deepEqual(createQueryUnderstanding("gold and white gold ring", items).materials, ["Gold", "White gold"]);
+});
+
+test("deterministic understanding does not translate gender into a backend filter", () => {
+  for (const query of ["women's bags", "men's watches", "bags for him", "shoes for her"]) {
+    const plan = createQueryUnderstanding(query, items);
+    assert.equal("genderAffinities" in plan, false);
+    assert.equal(plan.chips.some((chip) => chip.startsWith("Gender affinity:")), false);
+  }
+});
+
+test("local fallback does not reproduce planner-owned shopper or persona budgets", () => {
+  const persona = getPersonaById("first-luxury-purchase");
+  const pricedItems = [
+    { ...items[0], id: "within-persona-budget", price: 1400 },
+    { ...items[1], id: "over-persona-budget", price: 1600 },
+  ];
+
+  assert.deepEqual(
+    localSearchProducts(pricedItems, {
+      query: "bags",
+      filters: {},
+      maxPrice: 20000,
+      sort: "Recommended",
+      persona,
+    }).map(({ id }) => id).sort(),
+    ["over-persona-budget", "within-persona-budget"],
+  );
+  assert.deepEqual(
+    localSearchProducts(pricedItems, {
+      query: "bags under 1200",
+      filters: {},
+      maxPrice: 20000,
+      sort: "Recommended",
+      persona,
+    }).map(({ id }) => id).sort(),
+    ["over-persona-budget", "within-persona-budget"],
+  );
 });
 
 test("persona profile terms softly boost local relevance without becoming filters", () => {

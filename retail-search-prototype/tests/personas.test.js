@@ -7,6 +7,7 @@ import {
   getPersonaQueryExpansion,
   getPersonaSearchContext,
   getPersonaSearchRequestIdentity,
+  getPersonaStrictMaxPrice,
   personas,
 } from "../src/data/personas.js";
 
@@ -16,11 +17,21 @@ test("persona search expansions are bounded and Anonymous remains unprofiled", (
     assert.ok(persona.searchProfile.queryExpansion.length <= MAX_PERSONA_QUERY_EXPANSION_LENGTH);
     assert.ok(Object.isFrozen(persona.searchProfile));
     assert.ok(Object.isFrozen(persona.searchProfile.categoryQueryExpansions));
+    assert.equal(
+      persona.searchProfile.strictMaxPrice === null || Number.isInteger(persona.searchProfile.strictMaxPrice),
+      true,
+    );
     for (const expansion of Object.values(persona.searchProfile.categoryQueryExpansions)) {
       assert.ok(expansion.length <= MAX_PERSONA_QUERY_EXPANSION_LENGTH);
     }
   }
   assert.equal(getPersonaById("anonymous").searchProfile.queryExpansion, "");
+});
+
+test("strict persona budgets are explicit search constraints", () => {
+  assert.equal(getPersonaStrictMaxPrice(getPersonaById("first-luxury-purchase")), 1500);
+  assert.equal(getPersonaStrictMaxPrice(getPersonaById("fashion-insider")), null);
+  assert.equal(getPersonaSearchContext("first-luxury-purchase").strictMaxPrice, 1500);
 });
 
 test("watch intent selects each named persona's watch preference", () => {
@@ -56,6 +67,7 @@ test("search context includes shopping details but excludes identifying presenta
     "personaId",
     "personaVersion",
     "queryExpansion",
+    "strictMaxPrice",
   ]);
   assert.equal(context.personaId, persona.id);
   assert.equal(context.archetype, persona.archetype);

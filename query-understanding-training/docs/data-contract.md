@@ -10,7 +10,7 @@ Each JSONL row describes the exact input seen by OpenSearch's `QueryPlanningTool
   "example_id": "formal-watch",
   "slice": "intent_disambiguation",
   "input": {
-    "query_text": "Normalized shopper request: Dress watch under 5000\nImmutable service contract: {\"filter\":[{\"term\":{\"availability\":\"active\"}},{\"range\":{\"price\":{\"lte\":5000}}},{\"term\":{\"category\":\"watches\"}}],\"size\":24,\"track_total_hits\":10000,\"sort_mode\":\"recommended\",\"text_operator\":\"or\",\"base_text_query\":\"Dress watch\",\"persona\":{\"id\":\"watch-collector\",\"version\":1,\"archetype\":\"Watch collector\",\"background\":\"An experienced collector tracking dress watches across Europe and comfortable with resale pricing.\",\"mental_model\":\"A specialist inventory: exact model, condition, provenance, and price are decision fields.\",\"query_expansion\":\"dress watch reference provenance full set serviced collector steel\"}}\nCopy the core contract exactly. Apply persona only through the system persona-should recipe. Follow sort_mode.",
+    "query_text": "Shopper request: men's dress watch under 5000\nTrusted planner context: {\"required_filters\":[{\"term\":{\"availability\":\"active\"}},{\"term\":{\"category\":\"watches\"}}],\"ui_max_price\":8000,\"size\":24,\"track_total_hits\":10000,\"sort_mode\":\"recommended\",\"persona\":{\"id\":\"watch-collector\",\"version\":1,\"archetype\":\"Watch collector\",\"background\":\"An experienced collector tracking dress watches across Europe and comfortable with resale pricing.\",\"mental_model\":\"A specialist inventory: exact model, condition, provenance, and price are decision fields.\",\"query_expansion\":\"dress watch reference provenance full set serviced collector steel\"}}\nDerive price and gender affinity in the generated DSL. Apply persona only as instructed. Follow sort_mode.",
     "index_name": "secondhand_items_current",
     "index_mapping": {
       "_doc": {
@@ -32,7 +32,7 @@ Each JSONL row describes the exact input seen by OpenSearch's `QueryPlanningTool
     "query_fields": ["title", "brand", "canonical_text", "description", "availability", "category", "price", "quality_score", "freshness_score", "seller_score"]
   },
   "expectations": {
-    "required_filters": [{"field": "availability", "op": "term", "value": "active"}, {"field": "price", "op": "lte", "value": 5000}, {"field": "category", "op": "term", "value": "watches"}],
+    "required_filters": [{"field": "availability", "op": "term", "value": "active"}, {"field": "price", "op": "lte", "value": 5000}, {"field": "category", "op": "term", "value": "watches"}, {"field": "gender_affinity", "op": "terms", "value": ["men", "unisex"]}],
     "result_size": 24,
     "track_total_hits": 10000,
     "sort_mode": "recommended"
@@ -42,7 +42,7 @@ Each JSONL row describes the exact input seen by OpenSearch's `QueryPlanningTool
     "track_total_hits": 10000,
     "query": {
       "bool": {
-        "filter": [{"term": {"availability": "active"}}, {"range": {"price": {"lte": 5000}}}, {"term": {"category": "watches"}}],
+        "filter": [{"term": {"availability": "active"}}, {"range": {"price": {"lte": 5000}}}, {"term": {"category": "watches"}}, {"terms": {"gender_affinity": ["men", "unisex"]}}],
         "must": [{"multi_match": {"query": "Dress watch", "fields": ["title^5", "brand^3", "canonical_text^3", "description"], "operator": "or"}}],
         "should": [{"multi_match": {"query": "dress watch reference provenance full set serviced collector steel", "fields": ["title^5", "brand^3", "canonical_text^3", "description"], "operator": "or", "boost": 0.35}}, {"rank_feature": {"field": "quality_score", "boost": 0.2}}, {"rank_feature": {"field": "freshness_score", "boost": 0.05}}, {"rank_feature": {"field": "seller_score", "boost": 0.02}}]
       }
@@ -55,7 +55,7 @@ The loader renders the same system and user prompt templates registered in OpenS
 
 ## Native input fields
 
-- `query_text`: the complete, at-most-1,000-character planner question passed in the `agentic` clause. Its first line is a deterministic normalized summary derived from `base_text_query`, the service price ceiling, and `sort_mode`; raw shopper wording never reaches the planner. The remaining lines carry service-owned filters, result limit, total-hit setting, sort mode, canonical base text query, text operator, and persona in a compact immutable JSON contract. Reject an oversized envelope; never truncate the normalized summary or contract.
+- `query_text`: the complete, at-most-1,000-character planner question passed in the `agentic` clause. Its first line is raw, untrusted shopper wording. The second carries trusted required UI filters, UI price ceiling, result limit, total-hit setting, sort mode, and persona. The final line tells the planner to derive price and gender affinity in the generated DSL. Reject an oversized envelope; never truncate it.
 - `track_total_hits`: an integer from 0 through 10,000, matching the native connector's structured-output schema and runtime normalization. Boolean values are not valid v3 training or serving targets.
 - `rank_features`: a conditional explicit-sort guard. Recommended contracts omit it; every explicit sort includes exactly `"rank_features":false`.
 - `index_name`: used for offline allowlist checks; it is not part of the completion.
@@ -64,7 +64,7 @@ The loader renders the same system and user prompt templates registered in OpenS
 - `QueryPlanningTool` serializes both the mapping and `query_fields` as JSON string literals before connector substitution. The offline renderer mirrors that extra serialization layer exactly.
 - The custom prompt intentionally omits volatile sample-document and clock fields so the fine-tune sees the same stable inputs at training and serving time.
 
-The anonymous persona is exactly `{"id":"anonymous","version":1,"mode":"unprofiled"}`. A profiled persona has exactly `id`, `version`, `archetype`, `background`, `mental_model`, and `query_expansion`. The bounded context deliberately excludes names, demographics, and images. `query_expansion` is optional scoring context only; it never changes core matching or hard constraints.
+The anonymous persona is exactly `{"id":"anonymous","version":1,"mode":"unprofiled"}`. A profiled persona has `id`, `version`, `archetype`, `background`, `mental_model`, `query_expansion`, and optional `strict_max_price`. The bounded model context deliberately excludes names, demographics, and images. `query_expansion` is optional scoring context only. The OpenSearch-side planner may use only `strict_max_price` to affect a hard filter.
 
 ## Evaluation expectations
 
@@ -84,9 +84,9 @@ The target is one complete `SearchSourceBuilder`-compatible JSON object:
 - Do not include the index, search pipeline, `agentic` query, metadata envelope, explanations, or Markdown.
 - Use only mapped `query_fields` and policy-allowlisted query types.
 - Use full-text clauses only on mapped text fields, `prefix` only on keyword-like fields, `rank_feature` only on rank-feature fields, and type-compatible, satisfiable ranges.
-- Copy the contract's `base_text_query` and `text_operator` exactly into the canonical four-field `multi_match` in `bool.must`.
+- Derive one canonical four-field `multi_match` in `bool.must` from product, brand, and style intent while omitting price, gender, sort, and request-scaffolding words.
 - For a profiled persona, copy `persona.query_expansion` exactly into one four-field `multi_match` with operator `or` and boost `0.35`. It must be the first `bool.should` clause. Anonymous and unprofiled personas omit this clause.
-- Keep service filters in runtime order: active availability, the integer `price.lte` ceiling, then at most one normalized `term`/`terms` clause for category, condition, material, and country.
+- Copy trusted required filters, then derive one integer `price.lte` using the smallest shopper, UI, and persona ceiling. Explicit men's or women's intent supplies both that affinity and `unisex`; absent, mixed, or unisex intent omits `gender_affinity`. Never derive gender from persona context.
 - Recommended ranking appends the canonical quality, freshness, and seller `rank_feature` clauses after the optional persona clause and omits `sort`. Explicit sort modes omit rank-feature clauses but retain the single persona `should` clause for profiled shoppers.
 - `sort_mode=recommended` requires all three canonical rank clauses and forbids a `rank_features` key. `rank_features=false` on an explicit sort forbids every rank-feature clause. The policy cross-checks both conditional shapes.
 - Do not emit `bool.must_not`; this serving objective supports positive retrieval and service-owned filters only.

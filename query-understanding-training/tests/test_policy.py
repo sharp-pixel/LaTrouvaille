@@ -19,7 +19,7 @@ def _example(config: TrainingConfig, policy: CompilerPolicy):
 
 def _replace_contract(example, **updates: object):
     lines = example.input.query_text.splitlines()
-    prefix = "Immutable service contract: "
+    prefix = "Trusted planner context: "
     contract = json.loads(lines[1].removeprefix(prefix))
     contract.update(updates)
     lines[1] = prefix + json.dumps(contract, separators=(",", ":"))
@@ -27,7 +27,7 @@ def _replace_contract(example, **updates: object):
 
 
 def _replace_contract_filters(example, filters: list[object]):
-    return _replace_contract(example, filter=filters)
+    return _replace_contract(example, required_filters=filters)
 
 
 def _replace_persona(example, persona: object):
@@ -44,7 +44,7 @@ def test_valid_fixture_passes_policy(config: TrainingConfig, policy: CompilerPol
     )
 
 
-def test_normalized_summary_must_match_service_contract(
+def test_shopper_request_line_uses_the_planner_context_template(
     config: TrainingConfig,
     policy: CompilerPolicy,
 ) -> None:
@@ -53,7 +53,7 @@ def test_normalized_summary_must_match_service_contract(
     lines[0] = "Normalized shopper request: formal watch under 15000"
     drifted = example.input.model_copy(update={"query_text": "\n".join(lines)})
 
-    with pytest.raises(PolicyViolation, match="normalized shopper request does not match"):
+    with pytest.raises(PolicyViolation, match="planner-context template"):
         validate_agentic_request_body(
             drifted,
             example.target_body.to_opensearch(),
@@ -100,7 +100,7 @@ def test_recommended_contract_omits_rank_features_flag(
     example = _example(config, policy)
     request = _replace_contract(example, rank_features=rank_features)
 
-    with pytest.raises(PolicyViolation, match="recommended service contract must omit rank_features"):
+    with pytest.raises(PolicyViolation, match="recommended planner context must omit rank_features"):
         validate_agentic_request_body(
             request,
             example.target_body.to_opensearch(),
@@ -120,7 +120,7 @@ def test_explicit_sort_contract_forbids_rank_features_flag(
     )
     request = _replace_contract(example, rank_features=True)
 
-    with pytest.raises(PolicyViolation, match="explicit-sort service contract requires rank_features=false"):
+    with pytest.raises(PolicyViolation, match="explicit-sort planner context requires rank_features=false"):
         validate_agentic_request_body(
             request,
             example.target_body.to_opensearch(),
@@ -139,13 +139,13 @@ def test_explicit_sort_contract_requires_rank_features_field(
         if candidate.expectations.sort_mode == "lowest_price"
     )
     lines = example.input.query_text.splitlines()
-    prefix = "Immutable service contract: "
+    prefix = "Trusted planner context: "
     contract = json.loads(lines[1].removeprefix(prefix))
     del contract["rank_features"]
     lines[1] = prefix + json.dumps(contract, separators=(",", ":"))
     request = example.input.model_copy(update={"query_text": "\n".join(lines)})
 
-    with pytest.raises(PolicyViolation, match="explicit-sort service contract requires rank_features=false"):
+    with pytest.raises(PolicyViolation, match="explicit-sort planner context requires rank_features=false"):
         validate_agentic_request_body(
             request,
             example.target_body.to_opensearch(),
@@ -170,7 +170,7 @@ def test_policy_requires_exact_result_size(config: TrainingConfig, policy: Compi
         validate_agentic_request_body(example.input, payload, policy, example.expectations)
 
 
-def test_policy_requires_target_to_copy_immutable_service_contract(
+def test_policy_requires_target_to_copy_trusted_planner_controls(
     config: TrainingConfig,
     policy: CompilerPolicy,
 ) -> None:
@@ -178,7 +178,7 @@ def test_policy_requires_target_to_copy_immutable_service_contract(
     drifted_input = example.input.model_copy(
         update={"query_text": example.input.query_text.replace('"size":24', '"size":23')}
     )
-    with pytest.raises(PolicyViolation, match="copy the immutable service contract size exactly"):
+    with pytest.raises(PolicyViolation, match="copy the trusted planner-context size exactly"):
         validate_agentic_request_body(
             drifted_input,
             example.target_body.to_opensearch(),
@@ -186,67 +186,24 @@ def test_policy_requires_target_to_copy_immutable_service_contract(
             example.expectations,
         )
 
-    drifted_body = example.target_body.to_opensearch()
-    query = drifted_body["query"]
-    assert isinstance(query, dict)
-    bool_query = query["bool"]
-    assert isinstance(bool_query, dict)
-    filters = bool_query["filter"]
-    assert isinstance(filters, list)
-    filters.reverse()
-    with pytest.raises(PolicyViolation, match="copy the immutable service contract filters exactly"):
-        validate_agentic_request_body(example.input, drifted_body, policy, example.expectations)
 
-    drifted_text_query = example.input.query_text.replace(
-        '"base_text_query":"Dress watch"', '"base_text_query":"watch"'
-    )
-    assert drifted_text_query != example.input.query_text
-    drifted_text = example.input.model_copy(update={"query_text": drifted_text_query})
-    with pytest.raises(PolicyViolation, match="copy the immutable service contract base_text_query exactly"):
-        validate_agentic_request_body(
-            drifted_text,
-            example.target_body.to_opensearch(),
-            policy,
-            example.expectations,
-        )
-
-    drifted_operator_query = example.input.query_text.replace('"text_operator":"or"', '"text_operator":"and"')
-    assert drifted_operator_query != example.input.query_text
-    drifted_operator = example.input.model_copy(update={"query_text": drifted_operator_query})
-    with pytest.raises(PolicyViolation, match="copy the immutable service contract text_operator exactly"):
-        validate_agentic_request_body(
-            drifted_operator,
-            example.target_body.to_opensearch(),
-            policy,
-            example.expectations,
-        )
-
-
-def test_service_contract_filters_must_exactly_match_expectations(
+def test_trusted_required_filters_must_be_present_in_the_target(
     config: TrainingConfig,
     policy: CompilerPolicy,
 ) -> None:
     example = _example(config, policy)
 
-    for mutation in ("extra", "reordered"):
-        payload = example.target_body.to_opensearch()
-        query = payload["query"]
-        assert isinstance(query, dict)
-        bool_query = query["bool"]
-        assert isinstance(bool_query, dict)
-        filters = bool_query["filter"]
-        assert isinstance(filters, list)
-        if mutation == "extra":
-            filters.append({"term": {"shipping": "free"}})
-        else:
-            filters.reverse()
-
-        request = _replace_contract_filters(example, filters)
-        with pytest.raises(
-            PolicyViolation,
-            match=r"contract filters must match expectations\.required_filters exactly",
-        ):
-            validate_agentic_request_body(request, payload, policy, example.expectations)
+    request = _replace_contract_filters(
+        example,
+        [{"term": {"availability": "active"}}, {"term": {"category": "bags"}}],
+    )
+    with pytest.raises(PolicyViolation, match="must include each trusted planner-context required filter"):
+        validate_agentic_request_body(
+            request,
+            example.target_body.to_opensearch(),
+            policy,
+            example.expectations,
+        )
 
 
 def test_service_contract_rejects_filters_the_runtime_builder_cannot_emit(
@@ -259,21 +216,13 @@ def test_service_contract_rejects_filters_the_runtime_builder_cannot_emit(
     assert isinstance(query, dict)
     bool_query = query["bool"]
     assert isinstance(bool_query, dict)
-    filters = bool_query["filter"]
-    assert isinstance(filters, list)
-    filters.append({"term": {"shipping": "free"}})
-    request = _replace_contract_filters(example, filters)
-    expectations = example.expectations.model_copy(
-        update={
-            "required_filters": [
-                *example.expectations.required_filters,
-                Constraint(field="shipping", op="term", value="free"),
-            ]
-        }
+    request = _replace_contract_filters(
+        example,
+        [{"term": {"availability": "active"}}, {"term": {"shipping": "free"}}],
     )
 
     with pytest.raises(PolicyViolation, match="unsupported facet filter: shipping"):
-        validate_agentic_request_body(request, payload, policy, expectations)
+        validate_agentic_request_body(request, payload, policy, example.expectations)
 
 
 def test_policy_requires_recommended_ranking_to_omit_sort(
@@ -311,28 +260,18 @@ def test_policy_rejects_explicit_multi_match_type(
         validate_agentic_request_body(example.input, payload, policy, example.expectations)
 
 
-def test_service_contract_rejects_base_text_query_beyond_runtime_limit(
+def test_planner_context_rejects_oversized_shopper_request(
     config: TrainingConfig,
     policy: CompilerPolicy,
 ) -> None:
     example = _example(config, policy)
     oversized_text_query = "x" * 301
-    request = _replace_contract(example, base_text_query=oversized_text_query)
-    payload = example.target_body.to_opensearch()
-    query = payload["query"]
-    assert isinstance(query, dict)
-    bool_query = query["bool"]
-    assert isinstance(bool_query, dict)
-    must = bool_query["must"]
-    assert isinstance(must, list)
-    clause = must[0]
-    assert isinstance(clause, dict)
-    multi_match = clause["multi_match"]
-    assert isinstance(multi_match, dict)
-    multi_match["query"] = oversized_text_query
+    lines = example.input.query_text.splitlines()
+    lines[0] = f"Shopper request: {oversized_text_query}"
+    request = example.input.model_copy(update={"query_text": "\n".join(lines)})
 
-    with pytest.raises(PolicyViolation, match="base_text_query must be at most 300 characters"):
-        validate_agentic_request_body(request, payload, policy, example.expectations)
+    with pytest.raises(PolicyViolation, match="shopper request must be canonical"):
+        validate_agentic_request_body(request, example.target_body.to_opensearch(), policy, example.expectations)
 
 
 def test_profiled_persona_clause_must_be_exact_and_first(

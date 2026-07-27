@@ -15,7 +15,7 @@ def _first_example(config: TrainingConfig) -> TrainingExample:
 
 def test_training_fixture_satisfies_contract(config: TrainingConfig) -> None:
     example = _first_example(config)
-    assert "Normalized shopper request: Dress watch under 15000" in example.input.query_text
+    assert "Shopper request: Dress watch under 15000" in example.input.query_text
     assert example.objective_version == "opensearch_agentic_query_planner_v3"
     assert example.target_body.size == 24
     assert "_source" not in example.target_body.to_opensearch()

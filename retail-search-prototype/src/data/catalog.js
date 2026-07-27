@@ -252,6 +252,33 @@ const sizeVariants = {
 };
 const colorVariants = ["Black", "Brown", "Gold", "Silver", "Beige", "Ecru", "Red", "Burgundy", "Green", "Multicolour"];
 const sellerTiers = ["trusted", "expert", "first-time", "boutique", "wardrobe"];
+const womenProductKeys = new Set([
+  "MAISON AURELLE\u0000Cadre Francais steel watch",
+  "MAISON AURELLE\u0000Feline bracelet watch",
+  "ARDENNE\u0000Elise leather watch",
+  "BELLEGARDE\u0000Joyful steel watch",
+  "PIERREVAL\u0000Vintage oval dress watch",
+  "VALGARI\u0000Viper Coil watch",
+]);
+const menProductKeys = new Set([
+  "MONTREVAL GENEVE\u0000Celestine manual wind watch",
+  "DELACOUR GENEVE\u0000Heritage automatic watch",
+  "BREGONNE\u0000Tradition leather strap watch",
+  "WESTERLIN CHRONOMETRY\u0000Bellagio automatic watch",
+  "COOPER HALE\u0000Leather boots",
+  "GILDED FINCH\u0000Straight trousers",
+  "JUN ARATA\u0000Grey wool knitwear",
+]);
+const unisexProductKeys = new Set([
+  "CROWNSTONE\u0000Evermark steel watch",
+  "ORIONNE\u0000Belleville leather strap watch",
+  "LECOEUR HORLOGER\u0000Pivot classic watch",
+  "ATELIER MONTFAUCON\u0000Crown Elm steel watch",
+  "PORTER & ROWE\u0000Cotton trench coat",
+  "ARDENNE\u0000Cashmere scarf",
+  "FENELLI\u0000Emblem leather wallet",
+  "LAURENT VELIN\u0000Checked leather wallet",
+]);
 
 function pick(values, seed) {
   return values[Math.abs(seed) % values.length];
@@ -259,6 +286,16 @@ function pick(values, seed) {
 
 function clampPrice(price) {
   return Math.max(45, Math.round(price / 5) * 5);
+}
+
+function getGenderAffinity(brand, title) {
+  const productKey = `${brand}\u0000${title}`;
+  if (womenProductKeys.has(productKey)) return "women";
+  if (menProductKeys.has(productKey)) return "men";
+  if (unisexProductKeys.has(productKey)) return "unisex";
+  // The current demo catalogue is women-first; exceptions and every watch are
+  // explicitly classified above so future watch additions cannot rely on this baseline.
+  return "women";
 }
 
 export function buildListing(spec, baseIndex, variantIndex, globalIndex = baseIndex * 160 + variantIndex) {
@@ -280,6 +317,7 @@ export function buildListing(spec, baseIndex, variantIndex, globalIndex = baseIn
   const listingBadge = variantIndex === 0 ? badge : pick(badges, seed >> 9);
   const sellerTier = pick(sellerTiers, seed >> 11);
   const sellerScore = 72 + (seed % 29);
+  const genderAffinity = getGenderAffinity(brand, title);
   const itemReasons = [
     ...reasons,
     `${listingCondition}`,
@@ -293,6 +331,7 @@ export function buildListing(spec, baseIndex, variantIndex, globalIndex = baseIn
     brand,
     title,
     category,
+    genderAffinity,
     size: listingSize,
     price: listingPrice,
     oldPrice: listingOldPrice,
@@ -312,7 +351,7 @@ export function buildListing(spec, baseIndex, variantIndex, globalIndex = baseIn
     seller_tier: sellerTier,
     seller_score: sellerScore,
     listed_at: listedAt,
-    canonical_text: `${brand} ${title} ${category} ${material} ${listingColor} ${listingCondition} ${listingSize} ${listingCountry} ${sellerTier}`,
+    canonical_text: `${brand} ${title} ${category} ${genderAffinity} ${material} ${listingColor} ${listingCondition} ${listingSize} ${listingCountry} ${sellerTier}`,
   };
 }
 

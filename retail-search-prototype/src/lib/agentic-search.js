@@ -9,6 +9,7 @@ export const AGENTIC_QUERY_FIELDS = [
   "description",
   "canonical_text",
   "category",
+  "gender_affinity",
   "price",
   "old_price",
   "country",
@@ -24,7 +25,7 @@ export const AGENTIC_QUERY_FIELDS = [
   "seller_score",
 ];
 
-export const AGENTIC_FILTER_FIELDS = ["category", "condition", "material", "country"];
+export const AGENTIC_FILTER_FIELDS = ["category", "gender_affinity", "condition", "material", "country"];
 const AGENTIC_TEXT_FIELDS = new Set(["brand", "canonical_text", "description", "title"]);
 const AGENTIC_KEYWORD_FIELDS = new Set([
   "availability",
@@ -32,6 +33,7 @@ const AGENTIC_KEYWORD_FIELDS = new Set([
   "color",
   "condition",
   "country",
+  "gender_affinity",
   "material",
   "seller_tier",
   "shipping",
@@ -41,6 +43,7 @@ const AGENTIC_NORMALIZED_KEYWORD_FIELDS = new Set([
   "color",
   "condition",
   "country",
+  "gender_affinity",
   "material",
   "seller_tier",
   "shipping",
@@ -76,6 +79,7 @@ const AGENTIC_PREFIX_FIELDS = new Set([
   "color",
   "condition",
   "country",
+  "gender_affinity",
   "material",
   "seller_tier",
   "shipping",
@@ -126,10 +130,16 @@ export function buildAgenticQueryText({
   sort = "Recommended",
   size = 48,
   trackTotalHits = 10000,
-  understanding = {},
   persona,
 }) {
-  const priceCeiling = Number(maxPrice) || 20000;
+  const shopperRequest = String(query || "").replace(/\s+/g, " ").trim();
+  if (!shopperRequest) {
+    throw new Error("Agentic query requires shopper text; use the deterministic browse path");
+  }
+  const requestedPrice = Number(maxPrice);
+  const uiMaxPrice = Number.isFinite(requestedPrice)
+    ? Math.min(Math.max(Math.trunc(requestedPrice), 1), 20000)
+    : 20000;
   const resultSize = Math.min(Math.max(Math.trunc(Number(size) || 48), 1), 96);
   const totalHits =
     trackTotalHits === true
@@ -137,47 +147,30 @@ export function buildAgenticQueryText({
       : trackTotalHits === false
         ? 0
         : Math.max(0, Math.trunc(Number(trackTotalHits) || 0));
-  const mandatoryFilters = buildMandatoryFilters(filters, priceCeiling);
-  const { textQuery, textOperator } = buildServiceTextRecipe({ query, filters, sort, understanding });
-  if (!textQuery) {
-    throw new Error("Agentic query requires descriptive text; use the deterministic browse path");
-  }
-
-  const contract = JSON.stringify({
-    filter: mandatoryFilters,
+  const plannerContext = JSON.stringify({
+    required_filters: buildRequiredFilters(filters),
+    ui_max_price: uiMaxPrice,
     size: resultSize,
     track_total_hits: totalHits,
     sort_mode: SORT_INSTRUCTIONS[sort] || SORT_INSTRUCTIONS.Recommended,
     ...(sort === "Recommended" ? {} : { rank_features: false }),
-    text_operator: textOperator,
-    base_text_query: textQuery,
     persona: buildTrustedPersonaContext(persona),
   });
-  const prefix = "Normalized shopper request: ";
+  const prefix = "Shopper request: ";
   const suffix = [
-    `Immutable service contract: ${contract}`,
-    "Copy the core contract exactly. Apply persona only through the system persona-should recipe. Follow sort_mode.",
+    `Trusted planner context: ${plannerContext}`,
+    "Gender only from Shopper words, never persona. Dress/formal/suit watch neutral. Derive price; sort_mode.",
   ].join("\n");
   const shopperBudget = MAX_AGENTIC_QUERY_TEXT_LENGTH - prefix.length - suffix.length - 1;
   if (shopperBudget < 1) {
-    throw new Error("Agentic service contract exceeds the native 1000-character query_text limit");
+    throw new Error("Agentic planner context exceeds the native 1000-character query_text limit");
   }
-  const shopperRequest = buildNormalizedShopperRequest(textQuery, sort, priceCeiling);
   if (shopperRequest.length > shopperBudget) {
     throw new Error(
-      "Agentic normalized shopper request and service contract exceed the native 1000-character query_text limit",
+      "Agentic shopper request and planner context exceed the native 1000-character query_text limit",
     );
   }
   return `${prefix}${shopperRequest}\n${suffix}`;
-}
-
-function buildNormalizedShopperRequest(textQuery, sort, priceCeiling) {
-  const base = String(textQuery).replace(/\s+/g, " ").trim();
-  const boundedPrice = Math.max(1, Math.trunc(Number(priceCeiling) || 20000));
-  if (sort === "Lowest price") return `cheapest ${base} under ${boundedPrice}`;
-  if (sort === "Newest") return `newest ${base} under ${boundedPrice}`;
-  if (sort === "Price drop") return `${base} with biggest price drops under ${boundedPrice}`;
-  return `${base} under ${boundedPrice}`;
 }
 
 function boundedPersonaText(value, field, maxLength) {
@@ -221,6 +214,13 @@ export function buildTrustedPersonaContext(persona = {}, categories = []) {
       MAX_PERSONA_QUERY_EXPANSION_LENGTH,
     ),
   };
+  const rawStrictMaxPrice = persona?.strictMaxPrice ?? persona?.strict_max_price ?? null;
+  if (rawStrictMaxPrice !== null) {
+    if (!Number.isInteger(rawStrictMaxPrice) || rawStrictMaxPrice < 1 || rawStrictMaxPrice > 20000) {
+      throw new Error("Trusted persona strict_max_price must be an integer between 1 and 20000");
+    }
+    context.strict_max_price = rawStrictMaxPrice;
+  }
   if (JSON.stringify(context).length > MAX_PERSONA_CONTEXT_LENGTH) {
     throw new Error(`Trusted persona context exceeds ${MAX_PERSONA_CONTEXT_LENGTH} characters`);
   }
@@ -398,36 +398,6 @@ export function selectAvailableModel({ availableModelIds, fineTunedModel, baseMo
   throw new Error(`The model server exposes neither ${expected || "a configured model"}`);
 }
 
-export function deriveAgenticServiceConstraints({ filters = {}, maxPrice = 20000, understanding = {} }) {
-  const sanitizedFilters = Object.fromEntries(
-    AGENTIC_FILTER_FIELDS.map((field) => [field, sanitizeFilterValues(filters[field])]),
-  );
-  const effectiveFilters = {
-    ...sanitizedFilters,
-    category: sanitizedFilters.category.length
-      ? sanitizedFilters.category
-      : sanitizeFilterValues(understanding.categories),
-    material: sanitizedFilters.material.length
-      ? sanitizedFilters.material
-      : sanitizeFilterValues(understanding.materials),
-  };
-  const requestedPrice = Number(maxPrice);
-  const boundedPrice = Number.isFinite(requestedPrice)
-    ? Math.min(Math.max(Math.trunc(requestedPrice), 1), 20000)
-    : 20000;
-  const rawUnderstoodPrice = understanding.priceMax;
-  const hasUnderstoodPrice =
-    (typeof rawUnderstoodPrice === "number" ||
-      (typeof rawUnderstoodPrice === "string" && rawUnderstoodPrice.trim() !== "")) &&
-    Number.isFinite(Number(rawUnderstoodPrice));
-  const understoodPrice = hasUnderstoodPrice ? Number(rawUnderstoodPrice) : null;
-  const effectiveMaxPrice =
-    understoodPrice !== null
-      ? Math.min(boundedPrice, Math.min(Math.max(Math.trunc(understoodPrice), 1), 20000))
-      : boundedPrice;
-  return { filters: effectiveFilters, maxPrice: effectiveMaxPrice };
-}
-
 export function validateAgenticDsl({
   dslQuery,
   filters = {},
@@ -436,7 +406,6 @@ export function validateAgenticDsl({
   sort,
   size,
   trackTotalHits,
-  understanding = {},
   persona,
 }) {
   const body = decodeDsl(dslQuery);
@@ -460,40 +429,56 @@ export function validateAgenticDsl({
 
   const filterClauses = body.query.bool?.filter;
   const positiveFilters = Array.isArray(filterClauses) ? filterClauses : filterClauses ? [filterClauses] : [];
-  const expectedFilters = buildMandatoryFilters(filters, maxPrice);
-  if (!structuralJsonEqual(positiveFilters, expectedFilters)) {
-    throw new Error("Agentic query must copy the immutable service-contract filters exactly");
+  const allowedFilterFields = new Set(["availability", "price", ...AGENTIC_FILTER_FIELDS]);
+  for (const clause of positiveFilters) {
+    const queryType = Object.keys(clause || {})[0];
+    if (!["range", "term", "terms"].includes(queryType)) {
+      throw new Error("Agentic bool.filter supports only range, term, and terms clauses");
+    }
+    const field = Object.keys(clause[queryType] || {})[0];
+    if (!allowedFilterFields.has(field)) {
+      throw new Error(`Agentic bool.filter used unsupported inferred field: ${String(field)}`);
+    }
   }
-  const requiredConstraintFields = new Set(["availability", "price"]);
-  for (const field of AGENTIC_FILTER_FIELDS) {
-    if (normalizedFilterValues(filters[field]).length) requiredConstraintFields.add(field);
-  }
+  const requiredConstraintFields = new Set(
+    positiveFilters.flatMap((clause) => {
+      const payload = clause?.term || clause?.terms || clause?.range;
+      return payload && typeof payload === "object" && !Array.isArray(payload) ? Object.keys(payload) : [];
+    }),
+  );
   if (!containsExactFilter(positiveFilters, "availability", "active", { normalize: false })) {
     throw new Error("Agentic query omitted the availability filter");
   }
-  if (!containsRangeFilter(positiveFilters, "price", "lte", Number(maxPrice))) {
+  const priceCeiling = findRangeFilterValue(positiveFilters, "price", "lte");
+  if (!Number.isInteger(priceCeiling) || priceCeiling < 1 || priceCeiling > 20000) {
     throw new Error("Agentic query omitted the price ceiling");
+  }
+  const uiMaxPrice = Number(maxPrice);
+  if (Number.isFinite(uiMaxPrice) && priceCeiling > Math.trunc(uiMaxPrice)) {
+    throw new Error("Agentic query exceeded the explicit UI price ceiling");
   }
   for (const field of AGENTIC_FILTER_FIELDS) {
     const values = normalizedFilterValues(filters[field]);
     if (values.length && !containsTermsFilter(positiveFilters, field, values)) {
-      throw new Error(`Agentic query omitted the ${field} facet filter`);
+      throw new Error(`Agentic query omitted the explicit ${field} UI filter`);
     }
   }
   validateConstraintPlacement(body.query, requiredConstraintFields);
   const personaClause = buildPersonaQueryClause(persona);
   const multiMatch = validateCanonicalTextRecipe(body.query, sort, Boolean(personaClause));
-  validateServiceTextRecipe(multiMatch, shopperQuery, filters, sort, understanding);
+  if (
+    personaClause &&
+    normalizeFilterValue(multiMatch.query).includes(normalizeFilterValue(personaClause.multi_match.query))
+  ) {
+    throw new Error("Agentic persona expansion must remain an optional scoring clause");
+  }
   validateSort(body.sort, sort);
   validateRankingClauses(body.query, sort, personaClause);
   return body;
 }
 
-function buildMandatoryFilters(filters = {}, maxPrice = 20000) {
-  const mandatoryFilters = [
-    { term: { availability: "active" } },
-    { range: { price: { lte: Number(maxPrice) || 20000 } } },
-  ];
+function buildRequiredFilters(filters = {}) {
+  const mandatoryFilters = [{ term: { availability: "active" } }];
   for (const field of AGENTIC_FILTER_FIELDS) {
     const values = normalizedFilterValues(filters?.[field]);
     if (values.length === 0) continue;
@@ -913,8 +898,13 @@ function containsExactFilter(clauses, field, expected, options = {}) {
   });
 }
 
-function containsRangeFilter(clauses, field, operator, expected) {
-  return clauses.some((clause) => clause?.range?.[field]?.[operator] === expected);
+function findRangeFilterValue(clauses, field, operator) {
+  const matching = clauses.filter(
+    (clause) =>
+      clause?.range?.[field]?.[operator] !== undefined &&
+      Object.keys(clause.range[field]).length === 1,
+  );
+  return matching.length === 1 ? matching[0].range[field][operator] : null;
 }
 
 function containsTermsFilter(clauses, field, expectedValues) {
@@ -1014,18 +1004,6 @@ function validateCanonicalTextRecipe(query, mode, hasPersonaClause) {
     throw new Error("Agentic multi_match must use the canonical nonempty field and option recipe");
   }
   return multiMatch;
-}
-
-function validateServiceTextRecipe(multiMatch, shopperQuery, filters, mode, understanding) {
-  const expected = buildServiceTextRecipe({ query: shopperQuery, filters, sort: mode, understanding });
-  if (typeof shopperQuery === "string" && shopperQuery.trim()) {
-    if (multiMatch.query !== expected.textQuery) {
-      throw new Error("Agentic multi_match must copy the immutable service-contract base_text_query exactly");
-    }
-  }
-  if (multiMatch.operator !== expected.textOperator) {
-    throw new Error("Agentic multi_match must copy the immutable service-contract text_operator exactly");
-  }
 }
 
 function sanitizeFilterValues(value) {

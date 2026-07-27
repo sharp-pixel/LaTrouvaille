@@ -53,7 +53,7 @@ INTEGER_FIELD_LIMITS: dict[str, tuple[int, int]] = {
 }
 FLOAT_FIELD_TYPES = frozenset({"double", "float", "half_float", "scaled_float"})
 NUMERIC_FIELD_TYPES = frozenset(INTEGER_FIELD_LIMITS) | FLOAT_FIELD_TYPES
-AGENTIC_SERVICE_FILTER_FIELDS = ("category", "condition", "material", "country")
+AGENTIC_SERVICE_FILTER_FIELDS = ("category", "gender_affinity", "condition", "material", "country")
 AGENTIC_SERVICE_MAX_PRICE = 20_000
 AGENTIC_SERVICE_MAX_VALUES_PER_FIELD = 20
 AGENTIC_SERVICE_MAX_VALUE_LENGTH = 100
@@ -239,33 +239,41 @@ def _validate_agentic_service_contract(
     issues: list[str],
 ) -> str | None:
     lines = request.query_text.splitlines()
-    prefix = "Immutable service contract: "
+    prefix = "Trusted planner context: "
     instruction = (
-        "Copy the core contract exactly. Apply persona only through the system persona-should recipe. Follow sort_mode."
+        "Gender only from Shopper words, never persona. Dress/formal/suit watch neutral. "
+        "Derive price; sort_mode."
     )
-    if len(lines) != 3 or not lines[1].startswith(prefix) or lines[2] != instruction:
-        issues.append("input.query_text must use the exact three-line native service-contract template")
+    if (
+        len(lines) != 3
+        or not lines[0].startswith("Shopper request: ")
+        or not lines[1].startswith(prefix)
+        or lines[2] != instruction
+    ):
+        issues.append("input.query_text must use the exact three-line native planner-context template")
         return None
+    shopper_request = lines[0].removeprefix("Shopper request: ")
+    if not _is_canonical_persona_text(shopper_request, AGENTIC_SERVICE_MAX_TEXT_QUERY_LENGTH):
+        issues.append("input.query_text shopper request must be canonical nonblank single-line text")
     try:
         contract = json.loads(lines[1][len(prefix) :])
     except json.JSONDecodeError:
-        issues.append("input.query_text immutable service contract must be valid JSON")
+        issues.append("input.query_text trusted planner context must be valid JSON")
         return None
     required_contract_keys = {
-        "base_text_query",
-        "filter",
         "persona",
+        "required_filters",
         "size",
         "sort_mode",
-        "text_operator",
         "track_total_hits",
+        "ui_max_price",
     }
     if (
         not isinstance(contract, dict)
         or not required_contract_keys <= set(contract)
         or set(contract) - required_contract_keys != ({"rank_features"} if "rank_features" in contract else set())
     ):
-        issues.append("input.query_text immutable service contract has invalid keys")
+        issues.append("input.query_text trusted planner context has invalid keys")
         return None
     contract_track_total_hits = contract.get("track_total_hits")
     if (
@@ -274,68 +282,41 @@ def _validate_agentic_service_contract(
         or not 0 <= contract_track_total_hits <= policy.max_track_total_hits
     ):
         issues.append(
-            "immutable service contract track_total_hits must be an integer between "
+            "trusted planner context track_total_hits must be an integer between "
             f"0 and {policy.max_track_total_hits}"
         )
-    expected_summary = _normalized_shopper_summary(contract)
-    if expected_summary is None or lines[0] != f"Normalized shopper request: {expected_summary}":
-        issues.append("input.query_text normalized shopper request does not match the immutable service contract")
-    _validate_agentic_service_filters(contract.get("filter"), issues)
+    ui_max_price = contract.get("ui_max_price")
+    if (
+        not isinstance(ui_max_price, int)
+        or isinstance(ui_max_price, bool)
+        or not 1 <= ui_max_price <= AGENTIC_SERVICE_MAX_PRICE
+    ):
+        issues.append("trusted planner context ui_max_price must be an integer between 1 and 20000")
+    _validate_agentic_service_filters(contract.get("required_filters"), issues)
     persona_expansion = _validate_agentic_persona(contract.get("persona"), issues)
 
     query = body.get("query")
-    actual_filters: object = None
-    if isinstance(query, Mapping):
-        bool_query = query.get("bool")
-        if isinstance(bool_query, Mapping):
-            actual_filters = bool_query.get("filter")
-    if contract.get("filter") != actual_filters:
-        issues.append("target body must copy the immutable service contract filters exactly")
-    if expectations and contract.get("filter") != [
-        _constraint_filter_clause(constraint) for constraint in expectations.required_filters
-    ]:
-        issues.append("immutable service contract filters must match expectations.required_filters exactly")
+    required_filters = contract.get("required_filters")
+    if isinstance(required_filters, list):
+        for required_filter in required_filters:
+            if not _raw_filter_clause_is_present(body, required_filter):
+                issues.append("target body must include each trusted planner-context required filter")
     if not _strict_scalar_equal(contract.get("size"), body.get("size")):
-        issues.append("target body must copy the immutable service contract size exactly")
+        issues.append("target body must copy the trusted planner-context size exactly")
     if not _strict_scalar_equal(contract.get("track_total_hits"), body.get("track_total_hits")):
-        issues.append("target body must copy the immutable service contract track_total_hits exactly")
-    actual_text_query: object = None
-    actual_text_operator: object = None
-    if isinstance(query, Mapping):
-        bool_query = query.get("bool")
-        if isinstance(bool_query, Mapping):
-            must = bool_query.get("must")
-            if isinstance(must, list) and len(must) == 1 and isinstance(must[0], Mapping):
-                multi_match = must[0].get("multi_match")
-                if isinstance(multi_match, Mapping):
-                    actual_text_query = multi_match.get("query")
-                    actual_text_operator = multi_match.get("operator")
-    contract_text_query = contract.get("base_text_query")
-    if not isinstance(contract_text_query, str) or not contract_text_query.strip():
-        issues.append("immutable service contract base_text_query must be nonblank text")
-    else:
-        if len(contract_text_query) > AGENTIC_SERVICE_MAX_TEXT_QUERY_LENGTH:
-            issues.append("immutable service contract base_text_query must be at most 300 characters")
-        if not _is_canonical_persona_text(contract_text_query, AGENTIC_SERVICE_MAX_TEXT_QUERY_LENGTH):
-            issues.append("immutable service contract base_text_query must be canonical single-line text")
-        if contract_text_query != actual_text_query:
-            issues.append("target body must copy the immutable service contract base_text_query exactly")
-    if contract.get("text_operator") not in {"and", "or"}:
-        issues.append("immutable service contract text_operator must be and or or")
-    elif contract.get("text_operator") != actual_text_operator:
-        issues.append("target body must copy the immutable service contract text_operator exactly")
+        issues.append("target body must copy the trusted planner-context track_total_hits exactly")
     sort_mode = contract.get("sort_mode")
     rank_features_enabled: bool | None = None
     if sort_mode not in {"listed_at_desc", "old_price_desc", "price_asc", "recommended"}:
-        issues.append("immutable service contract sort_mode is unsupported")
+        issues.append("trusted planner context sort_mode is unsupported")
     elif sort_mode == "recommended":
         rank_features_enabled = True
         if "rank_features" in contract:
-            issues.append("recommended service contract must omit rank_features")
+            issues.append("recommended planner context must omit rank_features")
     else:
         rank_features_enabled = False
         if contract.get("rank_features") is not False:
-            issues.append("explicit-sort service contract requires rank_features=false")
+            issues.append("explicit-sort planner context requires rank_features=false")
     if expectations:
         expected_mode = {
             "recommended": "recommended",
@@ -344,7 +325,7 @@ def _validate_agentic_service_contract(
             "price_drop": "old_price_desc",
         }[expectations.sort_mode]
         if contract.get("sort_mode") != expected_mode:
-            issues.append("immutable service contract sort_mode does not match expectations.sort_mode")
+            issues.append("trusted planner context sort_mode does not match expectations.sort_mode")
     if isinstance(query, Mapping):
         _validate_agentic_persona_clause(query, persona_expansion, issues)
         if rank_features_enabled is not None:
@@ -352,38 +333,20 @@ def _validate_agentic_service_contract(
     return persona_expansion
 
 
-def _normalized_shopper_summary(contract: Mapping[str, object]) -> str | None:
-    base_text_query = contract.get("base_text_query")
-    filters = contract.get("filter")
-    sort_mode = contract.get("sort_mode")
-    if not isinstance(base_text_query, str) or not isinstance(filters, list) or len(filters) < 2:
-        return None
-    price_clause = filters[1]
-    if not isinstance(price_clause, Mapping):
-        return None
-    range_clause = price_clause.get("range")
-    if not isinstance(range_clause, Mapping):
-        return None
-    price = range_clause.get("price")
-    if not isinstance(price, Mapping):
-        return None
-    price_limit = price.get("lte")
-    if not isinstance(price_limit, int) or isinstance(price_limit, bool):
-        return None
-    if sort_mode == "price_asc":
-        return f"cheapest {base_text_query} under {price_limit}"
-    if sort_mode == "listed_at_desc":
-        return f"newest {base_text_query} under {price_limit}"
-    if sort_mode == "old_price_desc":
-        return f"{base_text_query} with biggest price drops under {price_limit}"
-    if sort_mode == "recommended":
-        return f"{base_text_query} under {price_limit}"
-    return None
+def _raw_filter_clause_is_present(body: Mapping[str, object], expected: object) -> bool:
+    query = body.get("query")
+    if not isinstance(query, Mapping):
+        return False
+    bool_query = query.get("bool")
+    if not isinstance(bool_query, Mapping):
+        return False
+    filters = bool_query.get("filter")
+    return isinstance(filters, list) and expected in filters
 
 
 def _validate_agentic_persona(value: object, issues: list[str]) -> str | None:
     if not isinstance(value, Mapping):
-        issues.append("immutable service contract persona must be an object")
+        issues.append("trusted planner context persona must be an object")
         return None
 
     anonymous_keys = {"id", "mode", "version"}
@@ -393,7 +356,7 @@ def _validate_agentic_persona(value: object, issues: list[str]) -> str | None:
         if value.get("id") != "anonymous" or value.get("mode") != "unprofiled" or value.get("version") != 1:
             issues.append("anonymous persona must be exactly id=anonymous, version=1, mode=unprofiled")
         return None
-    if keys != profiled_keys:
+    if keys not in (profiled_keys, profiled_keys | {"strict_max_price"}):
         issues.append("profiled persona has invalid keys")
         return None
 
@@ -418,6 +381,13 @@ def _validate_agentic_persona(value: object, issues: list[str]) -> str | None:
     for field, limit in limits.items():
         if not _is_canonical_persona_text(value.get(field), limit):
             issues.append(f"profiled persona {field} must contain 1-{limit} canonical single-line characters")
+    strict_max_price = value.get("strict_max_price")
+    if strict_max_price is not None and (
+        not isinstance(strict_max_price, int)
+        or isinstance(strict_max_price, bool)
+        or not 1 <= strict_max_price <= AGENTIC_SERVICE_MAX_PRICE
+    ):
+        issues.append("profiled persona strict_max_price must be an integer between 1 and 20000")
     if len(json.dumps(dict(value), ensure_ascii=False, separators=(",", ":"))) > AGENTIC_PERSONA_MAX_CONTEXT_LENGTH:
         issues.append(f"profiled persona context must be at most {AGENTIC_PERSONA_MAX_CONTEXT_LENGTH} characters")
     expansion = value.get("query_expansion")
@@ -492,43 +462,28 @@ def _validate_contract_rank_features(
 
 
 def _validate_agentic_service_filters(value: object, issues: list[str]) -> None:
-    if not isinstance(value, list) or not 2 <= len(value) <= 2 + len(AGENTIC_SERVICE_FILTER_FIELDS):
-        issues.append("immutable service contract filters must use the canonical two-to-six-clause recipe")
+    if not isinstance(value, list) or not 1 <= len(value) <= 1 + len(AGENTIC_SERVICE_FILTER_FIELDS):
+        issues.append("trusted planner context required_filters must use the canonical one-to-six-clause recipe")
         return
     if value[0] != {"term": {"availability": "active"}}:
-        issues.append("immutable service contract filters must start with availability=active")
-
-    price_clause = value[1]
-    price_limit: object = None
-    if isinstance(price_clause, Mapping) and set(price_clause) == {"range"}:
-        range_query = price_clause["range"]
-        if isinstance(range_query, Mapping) and set(range_query) == {"price"}:
-            price_bounds = range_query["price"]
-            if isinstance(price_bounds, Mapping) and set(price_bounds) == {"lte"}:
-                price_limit = price_bounds["lte"]
-    if (
-        not isinstance(price_limit, int)
-        or isinstance(price_limit, bool)
-        or not 1 <= price_limit <= AGENTIC_SERVICE_MAX_PRICE
-    ):
-        issues.append("immutable service contract filters must use price lte 1..20000 as the second clause")
+        issues.append("trusted planner context required_filters must start with availability=active")
 
     previous_field_index = -1
-    for clause in value[2:]:
+    for clause in value[1:]:
         if not isinstance(clause, Mapping) or len(clause) != 1:
-            issues.append("immutable service contract facet filters must be canonical term or terms clauses")
+            issues.append("trusted planner context facet filters must be canonical term or terms clauses")
             continue
         query_type, payload = next(iter(clause.items()))
         if query_type not in {"term", "terms"} or not isinstance(payload, Mapping) or len(payload) != 1:
-            issues.append("immutable service contract facet filters must be canonical term or terms clauses")
+            issues.append("trusted planner context facet filters must be canonical term or terms clauses")
             continue
         field, raw_filter_value = next(iter(payload.items()))
         if field not in AGENTIC_SERVICE_FILTER_FIELDS:
-            issues.append(f"immutable service contract contains an unsupported facet filter: {field}")
+            issues.append(f"trusted planner context contains an unsupported facet filter: {field}")
             continue
         field_index = AGENTIC_SERVICE_FILTER_FIELDS.index(field)
         if field_index <= previous_field_index:
-            issues.append("immutable service contract facet filters must follow runtime field order without duplicates")
+            issues.append("trusted planner context facet filters must follow runtime field order without duplicates")
         previous_field_index = field_index
 
         raw_values = raw_filter_value if query_type == "terms" else [raw_filter_value]
@@ -539,7 +494,7 @@ def _validate_agentic_service_filters(value: object, issues: list[str]) -> None:
             or any(not _is_canonical_service_filter_value(item) for item in raw_values)
             or len(set(raw_values)) != len(raw_values)
         ):
-            issues.append(f"immutable service contract {field} filter values are not canonical")
+            issues.append(f"trusted planner context {field} filter values are not canonical")
 
 
 def _is_canonical_service_filter_value(value: object) -> bool:
@@ -853,6 +808,15 @@ def _validate_agentic_query_semantics(
 
         if query_type == "bool":
             _validate_conjunctive_constraints(payload, path, field_definitions, issues)
+            filter_clauses = payload.get("filter", [])
+            if isinstance(filter_clauses, Mapping):
+                filter_clauses = [filter_clauses]
+            if isinstance(filter_clauses, list):
+                for index, clause in enumerate(filter_clauses):
+                    if not isinstance(clause, Mapping) or set(clause).isdisjoint({"range", "term", "terms"}):
+                        issues.append(
+                            f"{path}.bool.filter[{index}] supports only range, term, and terms clauses"
+                        )
             for clause_name in ("filter", "must", "must_not", "should"):
                 clauses = payload.get(clause_name, [])
                 if isinstance(clauses, Mapping):

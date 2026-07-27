@@ -20,7 +20,7 @@ services:
     container_name: la-trouvaille-search-api
     environment:
       - OPENSEARCH_URL=http://opensearch:9200
-      - OPENSEARCH_AGENTIC_SEARCH_TIMEOUT_MS=5000
+      - OPENSEARCH_AGENTIC_SEARCH_TIMEOUT_MS=30000
       - SEARCH_API_HOST=0.0.0.0
       - SEARCH_API_PORT=8790
     ports:

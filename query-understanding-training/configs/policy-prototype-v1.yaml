@@ -13,6 +13,7 @@ allowed_fields:
   - description
   - canonical_text
   - category
+  - gender_affinity
   - size
   - price
   - old_price

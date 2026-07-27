@@ -2,7 +2,7 @@ import { Client } from "@opensearch-project/opensearch";
 import { TARGET_CATALOG_SIZE, buildListingByIndex, iterateCatalog, products as previewProducts } from "../src/data/catalog.js";
 
 const node = process.env.OPENSEARCH_URL || "http://127.0.0.1:9200";
-const index = process.env.OPENSEARCH_INDEX || "secondhand_items_v1";
+const index = process.env.OPENSEARCH_INDEX || "secondhand_items_v2";
 const alias = process.env.OPENSEARCH_ALIAS || "secondhand_items_current";
 const targetDocuments = Number(process.env.CATALOG_SIZE || TARGET_CATALOG_SIZE);
 const bulkSize = Number(process.env.OPENSEARCH_BULK_SIZE || 5000);
@@ -27,9 +27,10 @@ function toDocument(product) {
     item_id: product.item_id,
     brand: product.brand,
     title: product.title,
-    description: `${product.brand} ${product.title}. ${product.condition}. ${product.material} ${product.color}. Ships from ${product.country}.`,
+    description: `${product.brand} ${product.title}. ${product.genderAffinity}. ${product.condition}. ${product.material} ${product.color}. Ships from ${product.country}.`,
     canonical_text: product.canonical_text,
     category: product.category,
+    gender_affinity: product.genderAffinity,
     size: product.size,
     price: product.price,
     old_price: product.oldPrice ?? null,
@@ -48,7 +49,7 @@ function toDocument(product) {
     listed_at: product.listed_at,
     quality_score: Math.max(product.score, 1),
     freshness_score: Math.max(1, 100 - (Number(product.item_id.slice(-2)) % 30) * 2),
-    vector_text: `${product.brand} ${product.title} ${product.category} ${product.material} ${product.color} ${product.reasons.join(" ")}`,
+    vector_text: `${product.brand} ${product.title} ${product.category} ${product.genderAffinity} ${product.material} ${product.color} ${product.reasons.join(" ")}`,
   };
 }
 
@@ -81,6 +82,7 @@ const indexBody = {
       description: { type: "text" },
       canonical_text: { type: "text" },
       category: { type: "keyword", normalizer: "lowercase_keyword" },
+      gender_affinity: { type: "keyword", normalizer: "lowercase_keyword" },
       size: { type: "keyword" },
       price: { type: "integer" },
       old_price: { type: "integer" },

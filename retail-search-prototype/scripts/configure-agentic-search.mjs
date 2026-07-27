@@ -98,16 +98,26 @@ function modelRegistration(selectedModel, sagemakerCredentials) {
     max_tokens: 1200,
   };
   if (structuredOutput) {
-    const facetFilterFields = ["category", "condition", "country", "material"];
+    const facetFilterFields = ["category", "condition", "country", "gender_affinity", "material"];
     const facetValueSchema = { type: "string", minLength: 1, maxLength: 100 };
     const singleKeywordProperties = {
       availability: { type: "string", enum: ["active"] },
       ...Object.fromEntries(facetFilterFields.map((field) => [field, facetValueSchema])),
+      gender_affinity: { type: "string", enum: ["men", "women", "unisex"] },
     };
     const multipleKeywordProperties = Object.fromEntries(
       facetFilterFields.map((field) => [
         field,
-        { type: "array", items: facetValueSchema, minItems: 2, maxItems: 20, uniqueItems: true },
+        {
+          type: "array",
+          items:
+            field === "gender_affinity"
+              ? { type: "string", enum: ["men", "women", "unisex"] }
+              : facetValueSchema,
+          minItems: 2,
+          maxItems: 20,
+          uniqueItems: true,
+        },
       ]),
     );
     const scoreSortOptions = {
@@ -261,7 +271,7 @@ function modelRegistration(selectedModel, sagemakerCredentials) {
                 bool: {
                   type: "object",
                   properties: {
-                    filter: { type: "array", items: filterClause, minItems: 2, maxItems: 6 },
+                    filter: { type: "array", items: filterClause, minItems: 2, maxItems: 7 },
                     must: { type: "array", items: multiMatchClause, minItems: 1, maxItems: 1 },
                     should: {
                       type: "array",

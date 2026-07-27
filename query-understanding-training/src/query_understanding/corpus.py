@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from query_understanding.dataset import canonical_json
 from query_understanding.schemas import DatasetSlice, TrainingExample
@@ -37,6 +37,7 @@ QUERY_FIELDS = [
     "description",
     "canonical_text",
     "category",
+    "gender_affinity",
     "price",
     "old_price",
     "country",
@@ -72,6 +73,7 @@ MAPPING_PROPERTIES: dict[str, Any] = {
     "country": {"type": "keyword", "normalizer": "lowercase_keyword"},
     "description": {"type": "text"},
     "freshness_score": {"type": "rank_feature"},
+    "gender_affinity": {"type": "keyword", "normalizer": "lowercase_keyword"},
     "image": {"type": "keyword", "index": False},
     "item_id": {"type": "keyword"},
     "listed_at": {"type": "date"},
@@ -101,6 +103,7 @@ PERSONAS: tuple[dict[str, object], ...] = (
         "background": "A product designer buying a first pre-loved piece, with a firm EUR 1,500 budget.",
         "mental_model": "A guided boutique: start from the occasion, then validate condition, authenticity, and value.",
         "query_expansion": "excellent condition very good condition verified timeless versatile value",
+        "strict_max_price": 1_500,
     },
     {
         "id": "fashion-insider",
@@ -290,6 +293,7 @@ class Scenario:
     sort_mode: str
     text_operator: str
     split_group_id: str | None = None
+    gender_affinities: tuple[str, ...] = ()
 
 
 class _ScenarioCommon(TypedDict):
@@ -369,7 +373,8 @@ def coverage_report(examples: tuple[TrainingExample, ...]) -> dict[str, object]:
         assert isinstance(persona, dict)
         personas[str(persona["id"])] += 1
         sorts[example.expectations.sort_mode] += 1
-        operators[str(contract["text_operator"])] += 1
+        body = cast(dict[str, Any], example.target_body.to_opensearch())
+        operators[str(body["query"]["bool"]["must"][0]["multi_match"]["operator"])] += 1
         sizes[example.expectations.result_size] += 1
         total_hits[example.expectations.track_total_hits] += 1
         mapping_shapes[_mapping_shape(example.input.index_mapping)] += 1
@@ -466,15 +471,26 @@ def _build_scenario(slice_name: DatasetSlice, index: int) -> Scenario:
             else (product.category,)
         )
         facet_pattern = index % 4
+        gender_affinities = (
+            (("men", "unisex") if (index // 4) % 2 else ("women", "unisex"))
+            if facet_pattern == 3
+            else ()
+        )
+        gender_intent = (
+            f"{'men' if gender_affinities[0] == 'men' else 'women'}'s "
+            if gender_affinities
+            else ""
+        )
         return Scenario(
             **common,
-            base_text_query=f"{product.model} {STYLE_MODIFIERS[(index // len(PRODUCTS)) % 6]}",
+            base_text_query=f"{gender_intent}{product.model} {STYLE_MODIFIERS[(index // len(PRODUCTS)) % 6]}",
             categories=categories,
             condition=CONDITIONS[index % len(CONDITIONS)] if facet_pattern != 1 else None,
             material=MATERIALS[(index * 5 + 1) % len(MATERIALS)] if facet_pattern in {0, 1} else None,
             country=COUNTRIES[(index * 7 + 2) % len(COUNTRIES)] if facet_pattern in {1, 2} else None,
             sort_mode=SORT_MODES[index % len(SORT_MODES)],
             text_operator="and" if len(categories) == 1 else "or",
+            gender_affinities=gender_affinities,
         )
     if slice_name == DatasetSlice.BROAD_QUERY:
         broad = (
@@ -615,27 +631,30 @@ def _persona_for_scenario(persona: dict[str, object], scenario: Scenario) -> dic
 
 
 def _build_example(scenario: Scenario, variant: int, persona: dict[str, object]) -> TrainingExample:
-    filters, constraints = _filters_and_constraints(scenario)
+    persona_maximum = 1_500 if persona.get("id") == "first-luxury-purchase" else scenario.maximum_price
+    effective_maximum = min(scenario.maximum_price, persona_maximum)
+    filters, constraints = _filters_and_constraints(scenario, effective_maximum)
+    required_filters = [
+        clause
+        for clause in filters
+        if _filter_clause_field(clause) not in {"gender_affinity", "price"}
+    ]
     contract: dict[str, object] = {
-        "filter": filters,
+        "required_filters": required_filters,
+        "ui_max_price": scenario.maximum_price,
         "size": scenario.result_size,
         "track_total_hits": scenario.track_total_hits,
         "sort_mode": SORT_CONTRACTS[scenario.sort_mode],
     }
     if scenario.sort_mode != "recommended":
         contract["rank_features"] = False
-    contract.update(
-        {
-            "text_operator": scenario.text_operator,
-            "base_text_query": scenario.base_text_query,
-            "persona": persona,
-        }
-    )
-    summary = _normalized_summary(scenario)
+    contract["persona"] = persona
+    summary = _normalized_summary(scenario, scenario.maximum_price)
     query_text = (
-        f"Normalized shopper request: {summary}\n"
-        f"Immutable service contract: {json.dumps(contract, ensure_ascii=False, separators=(',', ':'))}\n"
-        "Copy the core contract exactly. Apply persona only through the system persona-should recipe. Follow sort_mode."
+        f"Shopper request: {summary}\n"
+        f"Trusted planner context: {json.dumps(contract, ensure_ascii=False, separators=(',', ':'))}\n"
+        "Gender only from Shopper words, never persona. Dress/formal/suit watch neutral. "
+        "Derive price; sort_mode."
     )
     target = _target_body(scenario, filters, persona)
     mapping, fields = _mapping_and_fields(scenario, variant)
@@ -660,19 +679,39 @@ def _build_example(scenario: Scenario, variant: int, persona: dict[str, object])
     )
 
 
-def _filters_and_constraints(scenario: Scenario) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+def _filter_clause_field(clause: dict[str, object]) -> str | None:
+    for query_type in ("range", "term", "terms"):
+        payload = clause.get(query_type)
+        if isinstance(payload, dict) and len(payload) == 1:
+            field = next(iter(payload))
+            return field if isinstance(field, str) else None
+    return None
+
+
+def _filters_and_constraints(
+    scenario: Scenario,
+    maximum_price: int,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     filters: list[dict[str, object]] = [
         {"term": {"availability": "active"}},
-        {"range": {"price": {"lte": scenario.maximum_price}}},
+        {"range": {"price": {"lte": maximum_price}}},
     ]
     constraints: list[dict[str, object]] = [
         {"field": "availability", "op": "term", "value": "active"},
-        {"field": "price", "op": "lte", "value": scenario.maximum_price},
+        {"field": "price", "op": "lte", "value": maximum_price},
     ]
     values: tuple[tuple[str, object], ...] = (
         ("category", list(scenario.categories) if len(scenario.categories) > 1 else scenario.categories[0])
         if scenario.categories
         else ("category", None),
+        (
+            "gender_affinity",
+            list(scenario.gender_affinities)
+            if len(scenario.gender_affinities) > 1
+            else scenario.gender_affinities[0]
+            if scenario.gender_affinities
+            else None,
+        ),
         ("condition", scenario.condition),
         ("material", scenario.material),
         ("country", scenario.country),
@@ -750,9 +789,9 @@ def _mapping_and_fields(scenario: Scenario, variant: int) -> tuple[dict[str, Any
     return mapping, fields
 
 
-def _normalized_summary(scenario: Scenario) -> str:
+def _normalized_summary(scenario: Scenario, maximum_price: int) -> str:
     base = scenario.base_text_query
-    price = scenario.maximum_price
+    price = maximum_price
     if scenario.sort_mode == "lowest_price":
         return f"cheapest {base} under {price}"
     if scenario.sort_mode == "newest":
@@ -791,13 +830,20 @@ def _control_keys(examples: tuple[TrainingExample, ...]) -> set[str]:
     for example in examples:
         contract = _contract(example)
         contract.pop("persona")
-        keys.add(canonical_json(contract))
+        keys.add(
+            canonical_json(
+                {
+                    "shopper_request": example.input.query_text.splitlines()[0],
+                    "planner_context": contract,
+                }
+            )
+        )
     return keys
 
 
 def _contract(example: TrainingExample) -> dict[str, Any]:
     line = example.input.query_text.splitlines()[1]
-    value = json.loads(line.removeprefix("Immutable service contract: "))
+    value = json.loads(line.removeprefix("Trusted planner context: "))
     assert isinstance(value, dict)
     return value
 

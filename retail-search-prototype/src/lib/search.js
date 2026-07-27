@@ -341,6 +341,7 @@ function productText(product) {
       product.brand,
       product.title,
       product.category,
+      product.genderAffinity,
       product.material,
       product.color,
       product.condition,
@@ -416,7 +417,7 @@ export function localSearchProducts(items, { query, filters, maxPrice, sort, per
     ? createQueryUnderstanding(query, items)
     : createLiteralQueryPlan(query);
   const requestedPriceLimit = Number(maxPrice) || 20000;
-  const priceLimit = Math.min(requestedPriceLimit, understanding.priceMax ?? requestedPriceLimit);
+  const priceLimit = requestedPriceLimit;
   const effectiveSort = queryUnderstanding ? deriveEffectiveSort(query, sort) : sort;
   const personaCategories = [
     ...understanding.categories,

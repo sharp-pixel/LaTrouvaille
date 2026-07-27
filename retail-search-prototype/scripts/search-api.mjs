@@ -10,7 +10,6 @@ import {
   buildRecommendedRankFeatureClauses,
   buildServiceTextRecipe,
   buildTrustedPersonaContext,
-  deriveAgenticServiceConstraints,
   deriveEffectiveSort,
   validateAgenticDsl,
 } from "../src/lib/agentic-search.js";
@@ -64,6 +63,12 @@ function send(response, status, payload) {
     "content-type": "application/json",
   });
   response.end(JSON.stringify(payload));
+}
+
+function serviceUnavailable(message, cause) {
+  const error = new Error(message, cause ? { cause } : undefined);
+  error.statusCode = 503;
+  return error;
 }
 
 function readJson(request) {
@@ -273,6 +278,7 @@ function toProduct(hit) {
     brand: source.brand,
     title: source.title,
     category: source.category,
+    genderAffinity: source.gender_affinity,
     size: source.size,
     price: source.price,
     oldPrice: source.old_price,
@@ -334,13 +340,8 @@ async function search(payload) {
   ];
   const personaSearchContext = getPersonaSearchContext(persona.id, personaCategories);
   const personaContext = buildTrustedPersonaContext(personaSearchContext);
-  const { filters: effectiveFilters, maxPrice: effectiveMaxPrice } = deriveAgenticServiceConstraints({
-    filters,
-    maxPrice,
-    understanding,
-  });
-  const serviceTextRecipe = buildServiceTextRecipe({ query, filters: effectiveFilters, sort, understanding });
-  const agenticEligible = Boolean(serviceTextRecipe.textQuery);
+  const serviceTextRecipe = buildServiceTextRecipe({ query, filters, sort, understanding });
+  const agenticEligible = Boolean(query.trim());
   const personalization = (status) => {
     const effectiveStatus = !queryUnderstandingEnabled
       ? "bypassed"
@@ -368,6 +369,7 @@ async function search(payload) {
     "brand",
     "title",
     "category",
+    "gender_affinity",
     "size",
     "price",
     "old_price",
@@ -387,16 +389,19 @@ async function search(payload) {
     "canonical_text",
     "quality_score",
   ];
-  let agenticError = null;
-  let agenticDslQuery = null;
+  if (queryUnderstandingEnabled && query.trim() && agenticEligible) {
+    if (agenticMode !== "active") {
+      throw serviceUnavailable(
+        `Agentic Search is unavailable: OPENSEARCH_AGENTIC_SEARCH_MODE is ${agenticMode}`,
+      );
+    }
 
-  if (queryUnderstandingEnabled && agenticMode === "active" && query.trim() && agenticEligible) {
     try {
       const body = {
         query: buildAgenticQuery({
           query,
-          filters: effectiveFilters,
-          maxPrice: effectiveMaxPrice,
+          filters,
+          maxPrice,
           sort,
           size,
           trackTotalHits,
@@ -409,11 +414,11 @@ async function search(payload) {
       const result = unwrap(
         await client.search({ index, search_pipeline: agenticPipeline, body }, { requestTimeout: agenticTimeoutMs }),
       );
-      agenticDslQuery = result.ext?.dsl_query || null;
+      const agenticDslQuery = result.ext?.dsl_query || null;
       validateAgenticDsl({
         dslQuery: agenticDslQuery,
-        filters: effectiveFilters,
-        maxPrice: effectiveMaxPrice,
+        filters,
+        maxPrice,
         shopperQuery: query,
         sort,
         size,
@@ -450,7 +455,10 @@ async function search(payload) {
         products: result.hits.hits.map(toProduct),
       };
     } catch (error) {
-      agenticError = error;
+      throw serviceUnavailable(
+        `Agentic Search is unavailable (${agenticPipeline}): ${error.message}`,
+        error,
+      );
     }
   }
 
@@ -472,7 +480,7 @@ async function search(payload) {
         query: buildQuery({
           query,
           filters,
-          maxPrice: effectiveMaxPrice,
+          maxPrice,
           sort,
           tier2Rewrite,
           personaContext: personaSearchContext,
@@ -484,7 +492,7 @@ async function search(payload) {
     } else {
       const postFilter = [
         { term: { availability: "active" } },
-        { range: { price: { lte: Number(effectiveMaxPrice) || 20000 } } },
+        { range: { price: { lte: Number(maxPrice) || 20000 } } },
       ];
       Object.entries(filters).forEach(([key, values]) => {
         if (values.length) postFilter.push({ terms: { [key]: keywordValues(values) } });
@@ -510,14 +518,13 @@ async function search(payload) {
       totalRelation: typeof result.hits.total === "number" ? "eq" : result.hits.total?.relation,
       queryPlan: {
         ...understanding,
-        ...personalization(agenticError ? "fallback" : "applied"),
+        ...personalization("applied"),
         queryUnderstanding: { status: queryUnderstandingEnabled ? "enabled" : "bypassed" },
         dslQuery: lexicalDslQuery,
         tier2: tier2Rewrite,
         agentic: {
-          status: agenticError ? "fallback" : inactiveAgenticStatus,
+          status: inactiveAgenticStatus,
           pipeline: agenticPipeline,
-          error: agenticError?.message || null,
         },
       },
       enhancements: {
@@ -525,18 +532,15 @@ async function search(payload) {
         querqy: tier2Rewrite.status,
         rules: tier2Rewrite.rules || [],
         tookMs: tier2Rewrite.tookMs,
-        agentic: agenticError ? "fallback" : inactiveAgenticStatus,
+        agentic: inactiveAgenticStatus,
         agenticMode,
         agenticPipeline,
-        agenticError: agenticError?.message || null,
-        dslQuery: agenticDslQuery,
+        dslQuery: lexicalDslQuery,
       },
       products: result.hits.hits.map(toProduct),
-      warning: agenticError ? `Agentic Search failed; used lexical OpenSearch fallback: ${agenticError.message}` : undefined,
     };
   } catch (error) {
-    const details = [agenticError?.message, error.message].filter(Boolean).join("; ");
-    throw new Error(`OpenSearch search failed: ${details}`);
+    throw serviceUnavailable(`OpenSearch search failed: ${error.message}`, error);
   }
 }
 
@@ -562,7 +566,7 @@ const server = http.createServer(async (request, response) => {
 
     send(response, 404, { error: "not_found" });
   } catch (error) {
-    send(response, 500, { error: error.message });
+    send(response, error.statusCode || 500, { error: error.message });
   }
 });
 

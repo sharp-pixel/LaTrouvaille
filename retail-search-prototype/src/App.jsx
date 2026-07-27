@@ -173,9 +173,17 @@ export function App() {
       }),
       signal: controller.signal,
     })
-      .then((response) => {
-        if (!response.ok) throw new Error(`Search API returned ${response.status}`);
-        return response.json();
+      .then(async (response) => {
+        let payload;
+        try {
+          payload = await response.json();
+        } catch {
+          throw new Error(`Search API returned ${response.status} without a JSON response`);
+        }
+        if (!response.ok) {
+          throw new Error(payload.error || `Search API returned ${response.status}`);
+        }
+        return payload;
       })
       .then((payload) => {
         if (controller.signal.aborted) return;

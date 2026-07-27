@@ -6,12 +6,17 @@ function validateQueryExpansion(queryExpansion) {
   }
 }
 
-function createSearchProfile(queryExpansion, categoryQueryExpansions = {}) {
+function createSearchProfile(queryExpansion, categoryQueryExpansions = {}, constraints = {}) {
   validateQueryExpansion(queryExpansion);
   Object.values(categoryQueryExpansions).forEach(validateQueryExpansion);
+  const strictMaxPrice = constraints.strictMaxPrice ?? null;
+  if (strictMaxPrice !== null && (!Number.isInteger(strictMaxPrice) || strictMaxPrice < 1 || strictMaxPrice > 20000)) {
+    throw new TypeError("Persona strict maximum price must be an integer between 1 and 20000");
+  }
   return Object.freeze({
     queryExpansion,
     categoryQueryExpansions: Object.freeze({ ...categoryQueryExpansions }),
+    strictMaxPrice,
   });
 }
 
@@ -43,6 +48,7 @@ export const personas = [
       {
         Watches: "verified timeless value bracelet jewellery sculptural coil mini oval",
       },
+      { strictMaxPrice: 1500 },
     ),
   },
   {
@@ -111,6 +117,11 @@ export function getPersonaQueryExpansion(persona, categories = []) {
   return matchingCategory ? categoryExpansions[matchingCategory] : profile.queryExpansion;
 }
 
+export function getPersonaStrictMaxPrice(persona) {
+  const value = persona?.searchProfile?.strictMaxPrice ?? persona?.strictMaxPrice ?? null;
+  return Number.isInteger(value) && value >= 1 && value <= 20000 ? value : null;
+}
+
 // This is the only persona shape intended for search services or model context.
 // It includes shopping context while deliberately excluding names, demographics, and images.
 export function getPersonaSearchContext(personaId, categories = []) {
@@ -122,5 +133,6 @@ export function getPersonaSearchContext(personaId, categories = []) {
     background: persona.background,
     mentalModel: persona.mentalModel,
     queryExpansion: getPersonaQueryExpansion(persona, categories),
+    strictMaxPrice: getPersonaStrictMaxPrice(persona),
   };
 }

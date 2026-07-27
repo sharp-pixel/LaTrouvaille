@@ -7,22 +7,22 @@ React prototype for a second-hand luxury retail search experience with:
 - Local UBI collector in `scripts/ubi-collector.mjs`
 - Optional Tier-2 query rewriter in `scripts/tier2-rewriter.mjs`
 - Native OpenSearch Agentic Search backed by the fine-tuned query model, with base-model fallback
-- OpenSearch-backed search API with a deterministic lexical fallback in `scripts/search-api.mjs`
+- OpenSearch-backed search API that fails closed when native Agentic Search is unavailable
 - OpenSearch indexing scripts in `scripts/`
 
-The catalogue is generated deterministically from 69 luxury item templates. The demo keeps two seller variants per template, producing an evenly represented 138-listing catalogue in both the browser fallback and OpenSearch. Duplicate models are separate seller listings with their own condition, country, price, seller, and listing date. A two-million-listing profile remains available for explicit scale testing.
+The catalogue is generated deterministically from 69 luxury item templates. The demo keeps two seller variants per template, producing an evenly represented 138-listing catalogue for homepage previews and OpenSearch. Duplicate models are separate seller listings with their own condition, country, price, seller, and listing date. A two-million-listing profile remains available for explicit scale testing.
 
 Tier-1 search caps hit counting for latency, so broad result sets may display lower-bound counts such as `10,000+`. Exact analytics and deeper count jobs belong in a Tier-2 path.
 
 Rule-based rewriting is treated as Tier-2. The search API calls `QUERY_REWRITE_ENDPOINT` with a tight timeout and continues with the base OpenSearch query if that service is unavailable, slow, or has no matching rule. The local `query:rewriter` script is a lightweight Querqy-style adapter stub; it keeps the service boundary explicit so it can later be replaced by Querqy Unplugged. Persona-aware scoring is part of the native Agentic Search plan instead.
 
-Natural-language product queries use OpenSearch's native `agentic` query and an `agentic_query_translator` search pipeline. A streamlined flow agent runs the native `QueryPlanningTool` against a Ministral endpoint. Ordinary OpenAI-compatible provisioning checks `/v1/models`, selects `AGENTIC_FINE_TUNED_MODEL` when that alias is available, and otherwise selects `AGENTIC_BASE_MODEL`. Optional SageMaker provisioning uses a statically configured model name and a SigV4 connector because SageMaker model discovery and authentication differ from a persistent OpenAI API key. If the pipeline is missing or model inference fails at request time, the API retries with the existing deterministic lexical OpenSearch query before falling back to the browser-sized local catalogue.
+Natural-language product queries use OpenSearch's native `agentic` query and an `agentic_query_translator` search pipeline. A streamlined flow agent runs the native `QueryPlanningTool` against a Ministral endpoint. Ordinary OpenAI-compatible provisioning checks `/v1/models`, selects `AGENTIC_FINE_TUNED_MODEL` when that alias is available, and otherwise selects `AGENTIC_BASE_MODEL`. Optional SageMaker provisioning uses a statically configured model name and a SigV4 connector because SageMaker model discovery and authentication differ from a persistent OpenAI API key. If the pipeline is missing, model inference fails, or the generated DSL is invalid, the API returns HTTP 503 with the underlying error and no catalogue results.
 
-The fine-tune uses the versioned `opensearch_agentic_query_planner_v3` objective and the same system/user prompt files that are registered with `QueryPlanningTool`. Its completion is the complete executable search body: `size`, `track_total_hits`, `query`, and any requested `sort`. The incoming agentic request owns only `_source`; exact result-size, count, filters, sort, canonical base text, text operator, and a bounded trusted persona context are encoded as a compact immutable JSON contract inside `query_text`. The browser sends only `personaId`; the API resolves the allowlisted profile and excludes names, demographics, and images from model context. The shopper's base text remains required and unchanged. A profiled persona contributes one exact low-boost `multi_match` as the first optional scoring clause, while Anonymous emits no persona clause. Deterministic understanding contributes safe category, material, price, and natural-language sort constraints before the contract is built; an explicit non-default UI sort wins. The builder preserves the complete normalized summary and contract and uses the lexical path if they cannot fit inside the native 1,000-character limit. A detectable internal planner fallback and any response that misses those hard requirements are likewise retried through the persona-aware lexical path.
+The fine-tune uses the versioned `opensearch_agentic_query_planner_v3` objective and the same system/user prompt files that are registered with `QueryPlanningTool`. Its completion is the complete executable search body: `size`, `track_total_hits`, `query`, and any requested `sort`. The incoming agentic request owns only `_source`. Its three-line `query_text` carries raw shopper wording plus trusted UI controls and bounded persona context. The OpenSearch-side GenAI prompt—not the search API—derives the effective price ceiling and gender affinity: it chooses the smallest shopper, UI, and `persona.strict_max_price` limit, and maps explicit men's or women's intent to that affinity plus `unisex`. The browser sends only `personaId`; the API resolves the allowlisted profile and excludes names, demographics, and images from model context. A profiled persona contributes one exact low-boost `multi_match` as the first optional scoring clause, while Anonymous emits no persona clause. The builder rejects an envelope that exceeds the native 1,000-character limit. A detectable internal planner fallback or structurally unsafe response returns HTTP 503 with no catalogue results.
 
 The training renderer mirrors the native OpenSearch 3.7 prompt representation observed end to end: the mapping source is wrapped in `_doc`, and both the mapping and `query_fields` reach the prompt as JSON-encoded strings. Keep that serialization synchronized with the deployed `QueryPlanningTool` when upgrading OpenSearch.
 
-The API checks `agentic_context.dsl_query` after OpenSearch returns. That is a result-correctness and failover check, not a pre-execution security boundary: native Agentic Search has already executed the generated DSL. The local Compose node caps Boolean queries at 100 clauses; production deployment must also trust the registered planner/connector and enforce OpenSearch-side timeouts, permissions, and resource controls.
+The API checks `agentic_context.dsl_query` after OpenSearch returns for safe fields, query types, clause limits, required UI controls, and response shape. It does not re-derive shopper budget or gender intent. This is a result-correctness check, not a pre-execution security boundary: native Agentic Search has already executed the generated DSL. The local Compose node caps Boolean queries at 100 clauses; production deployment must also trust the registered planner/connector and enforce OpenSearch-side timeouts, permissions, and resource controls.
 
 See `docs/architecture-report.md` for the current architecture report.
 
@@ -44,9 +44,9 @@ UBI_FORWARD_OPENSEARCH=1 npm run ubi:collector
 npm run dev
 ```
 
-The React app calls `http://127.0.0.1:8790/search` and falls back to the same local query matcher if the search API is unavailable.
+The React app calls `http://127.0.0.1:8790/search` and renders an explicit error with no catalogue results if the API or Agentic Search is unavailable.
 
-The Query understanding toggle is enabled by default. Turning it off sends `queryUnderstanding: false`, skips the native LLM pipeline, deterministic intent extraction, Tier-2 rules, and persona scoring, and sends the literal query tokens with OR semantics plus explicit UI controls through lexical OpenSearch or the local outage fallback.
+The Query understanding toggle is enabled by default. Turning it off sends `queryUnderstanding: false`, skips the native LLM pipeline, deterministic intent extraction, Tier-2 rules, and persona scoring, and sends the literal query tokens with OR semantics plus explicit UI controls through lexical OpenSearch. This shopper-controlled bypass is the only lexical search path.
 
 ## Local UBI Capture
 
@@ -88,7 +88,9 @@ docker compose -f compose.yml up -d --build app
 Vite embeds these values in the static bundle, so rebuild the `app` service after
 changing either endpoint.
 
-Then create UBI indexes and index the catalogue:
+The Search API container waits for OpenSearch and automatically creates missing UBI
+indexes and the catalogue alias before it starts serving requests. To refresh those
+resources explicitly from the host, run:
 
 ```bash
 npm run opensearch:bootstrap
@@ -114,7 +116,7 @@ Useful overrides:
 
 ```bash
 OPENSEARCH_URL=http://127.0.0.1:9200
-OPENSEARCH_INDEX=secondhand_items_v1
+OPENSEARCH_INDEX=secondhand_items_v2
 OPENSEARCH_ALIAS=secondhand_items_current
 QUERY_REWRITE_ENDPOINT=http://127.0.0.1:8791/rewrite
 QUERY_REWRITE_TIMEOUT_MS=20
@@ -148,7 +150,7 @@ npm run opensearch:agentic
 npm run search:api
 ```
 
-No API key is needed for the usual local LM Studio server. The registered connector uses LM Studio's `response_format: json_schema` mode to constrain root and nested query shapes, mapped field names, filters, ranking clauses, and sorts. Exact contract copying is still verified from `agentic_context.dsl_query`; a mismatch triggers lexical OpenSearch retry. Keep the selected model loaded while OpenSearch handles agentic queries. Set `OPENSEARCH_AGENTIC_SEARCH_MODE=off` to use only the deterministic lexical query path.
+No API key is needed for the usual local LM Studio server. The registered connector uses LM Studio's `response_format: json_schema` mode to constrain root and nested query shapes, mapped field names, filters, ranking clauses, and sorts. Runtime shape validation still checks `agentic_context.dsl_query`; a mismatch returns HTTP 503. Keep the selected model loaded while OpenSearch handles agentic queries. To use literal lexical search intentionally, turn off Query understanding in the UI; setting `OPENSEARCH_AGENTIC_SEARCH_MODE=off` while Query understanding remains enabled returns HTTP 503.
 
 ### Amazon SageMaker
 

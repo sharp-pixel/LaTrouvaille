@@ -30,7 +30,7 @@ def test_source_row_becomes_completion_only_conversation(config: TrainingConfig,
     assert prompt[0]["role"] == "system"
     assert prompt[1]["role"] == "user"
     assert completion[0]["role"] == "assistant"
-    assert "Question: Normalized shopper request:" in prompt[1]["content"]
+    assert "Question: Shopper request:" in prompt[1]["content"]
     assert '"id":"watch-collector"' in prompt[1]["content"]
     assert (
         '"query_expansion":"traditional dress automatic manual wind leather strap heritage"' in prompt[1]["content"]
@@ -75,30 +75,28 @@ def test_fixtures_use_canonical_persona_contexts(config: TrainingConfig, policy:
     for path in (config.data.train_file, config.data.eval_file):
         for example in read_examples(path, policy):
             contract_line = example.input.query_text.splitlines()[1]
-            contract = json.loads(contract_line.removeprefix("Immutable service contract: "))
+            contract = json.loads(contract_line.removeprefix("Trusted planner context: "))
             assert isinstance(contract["track_total_hits"], int)
             assert not isinstance(contract["track_total_hits"], bool)
             if contract["sort_mode"] == "recommended":
                 assert "rank_features" not in contract
                 assert list(contract) == [
-                    "filter",
+                    "required_filters",
+                    "ui_max_price",
                     "size",
                     "track_total_hits",
                     "sort_mode",
-                    "text_operator",
-                    "base_text_query",
                     "persona",
                 ]
             else:
                 assert contract["rank_features"] is False
                 assert list(contract) == [
-                    "filter",
+                    "required_filters",
+                    "ui_max_price",
                     "size",
                     "track_total_hits",
                     "sort_mode",
                     "rank_features",
-                    "text_operator",
-                    "base_text_query",
                     "persona",
                 ]
             persona = contract["persona"]
@@ -115,10 +113,11 @@ def test_fixtures_use_canonical_persona_contexts(config: TrainingConfig, policy:
             has_watch_filter = any(
                 clause == {"term": {"category": "watches"}}
                 or (isinstance(clause.get("terms"), dict) and "watches" in clause["terms"].get("category", []))
-                for clause in contract["filter"]
+                for clause in contract["required_filters"]
             )
             query_words = {
-                word.strip(".,?!:;") for word in contract["base_text_query"].lower().replace("-", " ").split()
+                word.strip(".,?!:;")
+                for word in example.input.query_text.splitlines()[0].lower().replace("-", " ").split()
             }
             expansion_key = "watches" if has_watch_filter or {"watch", "watches"} & query_words else "default"
             expected_expansion = expected_expansions[persona_id][expansion_key]
@@ -132,6 +131,46 @@ def test_fixtures_use_canonical_persona_contexts(config: TrainingConfig, policy:
 
     assert seen_ids == {"anonymous", *expected_expansions}
     assert anonymous_examples >= 5
+
+
+def test_fixtures_encode_gender_intent_and_strict_persona_budgets(
+    config: TrainingConfig,
+    policy: CompilerPolicy,
+) -> None:
+    gender_examples = 0
+    persona_price_limits: list[int] = []
+    for path in (config.data.train_file, config.data.eval_file):
+        for example in read_examples(path, policy):
+            contract = json.loads(
+                example.input.query_text.splitlines()[1].removeprefix("Trusted planner context: ")
+            )
+            persona_id = contract["persona"]["id"]
+            target_filters = example.target_body.to_opensearch()["query"]["bool"]["filter"]
+            price_filter = next(
+                clause["range"]["price"]["lte"] for clause in target_filters if "price" in clause.get("range", {})
+            )
+            if persona_id == "first-luxury-purchase":
+                persona_price_limits.append(price_filter)
+                assert contract["persona"]["strict_max_price"] == 1_500
+
+            gender_filters = [
+                clause
+                for clause in target_filters
+                if "gender_affinity" in clause.get("term", {}) or "gender_affinity" in clause.get("terms", {})
+            ]
+            for clause in gender_filters:
+                gender_examples += 1
+                assert clause["terms"]["gender_affinity"] in (["men", "unisex"], ["women", "unisex"])
+            assert all(
+                "gender_affinity" not in clause.get("term", {})
+                and "gender_affinity" not in clause.get("terms", {})
+                and "price" not in clause.get("range", {})
+                for clause in contract["required_filters"]
+            )
+
+    assert gender_examples == 300
+    assert persona_price_limits
+    assert max(persona_price_limits) == 1_500
 
 
 def test_train_fixture_covers_each_sort_with_profiled_and_anonymous_personas(
@@ -161,7 +200,7 @@ def test_train_fixture_contains_persona_only_counterfactual(
     summaries_by_controls: dict[str, set[str]] = {}
     for example in read_examples(config.data.train_file, policy):
         lines = example.input.query_text.splitlines()
-        contract = json.loads(lines[1].removeprefix("Immutable service contract: "))
+        contract = json.loads(lines[1].removeprefix("Trusted planner context: "))
         persona = contract.pop("persona")
         controls = canonical_json(contract)
         persona_ids_by_controls.setdefault(controls, set()).add(persona["id"])

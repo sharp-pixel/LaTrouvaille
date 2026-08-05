@@ -64,15 +64,16 @@ function rolePolicy(account, bucket) {
     Version: "2012-10-17",
     Statement: [
       {
+        // SageMaker's input-channel validation issues an unconditioned
+        // ListBucket against this bucket, so the s3:prefix condition that
+        // previously scoped this statement caused CreateTrainingJob to fail
+        // with AccessDenied. ListBucket stays scoped to this single private,
+        // encrypted, public-access-blocked training bucket; object reads below
+        // remain restricted to the source/ prefix.
         Sid: "ReadTrainingSourceAndBucketMetadata",
         Effect: "Allow",
         Action: ["s3:GetBucketLocation", "s3:ListBucket"],
         Resource: `arn:aws:s3:::${bucket}`,
-        Condition: {
-          StringLike: {
-            "s3:prefix": ["source/*", "output/*", "checkpoints/*"],
-          },
-        },
       },
       {
         Sid: "ReadTrainingSource",
@@ -124,16 +125,13 @@ function rolePolicy(account, bucket) {
 
 function ensureBucket(bucket) {
   if (!exists(["s3api", "head-bucket", "--bucket", bucket])) {
-    aws([
-      "s3api",
-      "create-bucket",
-      "--region",
-      REGION,
-      "--bucket",
-      bucket,
-      "--create-bucket-configuration",
-      `LocationConstraint=${REGION}`,
-    ]);
+    // us-east-1 is the S3 default region and rejects a LocationConstraint; all
+    // other regions require one.
+    const createArgs = ["s3api", "create-bucket", "--region", REGION, "--bucket", bucket];
+    if (REGION !== "us-east-1") {
+      createArgs.push("--create-bucket-configuration", `LocationConstraint=${REGION}`);
+    }
+    aws(createArgs);
   }
   aws([
     "s3api",
@@ -212,7 +210,8 @@ function containerCommand() {
 
 function trainingJob({ bucket, roleArn, mode, sourceKey }) {
   const timestamp = new Date().toISOString().replaceAll(/[-:.TZ]/g, "").slice(0, 14);
-  const jobName = `la-trouvaille-ministral-qlora-${mode}-${timestamp}`;
+  const modelTag = process.env.TRAINING_MODEL_TAG || "ministral";
+  const jobName = `la-trouvaille-${modelTag}-qlora-${mode}-${timestamp}`;
   const smoke = mode === "smoke";
   return {
     TrainingJobName: jobName,
@@ -253,7 +252,9 @@ function trainingJob({ bucket, roleArn, mode, sourceKey }) {
       TOKENIZERS_PARALLELISM: "false",
       PYTHONUNBUFFERED: "1",
       PIP_DISABLE_PIP_VERSION_CHECK: "1",
-      TRAINING_CONFIG: smoke ? "configs/qlora-sagemaker-smoke.yaml" : "configs/qlora-sagemaker.yaml",
+      TRAINING_CONFIG:
+        process.env.TRAINING_CONFIG ||
+        (smoke ? "configs/qlora-sagemaker-smoke.yaml" : "configs/qlora-sagemaker.yaml"),
     },
     RetryStrategy: { MaximumRetryAttempts: 1 },
     Tags: [

@@ -167,7 +167,7 @@ def run_training(config: TrainingConfig, project_root: Path, resume_from_checkpo
         quantization_config=quantization_config,
         peft_config=peft_config,
     )
-    _assert_language_model_only_trainables(trainer.model)
+    _assert_language_model_only_trainables(trainer.model, config.lora.trainable_prefix)
     write_run_manifest(config, project_root)
     result = trainer.train(resume_from_checkpoint=str(resume_from_checkpoint) if resume_from_checkpoint else None)
     trainer.save_model(str(config.trainer.output_dir / "adapter"))
@@ -195,14 +195,14 @@ def _torch_dtype(name: str, torch_module: Any) -> Any:
         raise ValueError(f"unsupported torch dtype: {name}") from error
 
 
-def _assert_language_model_only_trainables(model: Any) -> None:
+def _assert_language_model_only_trainables(model: Any, trainable_prefix: str = "model.language_model.layers.") -> None:
     trainable = [name for name, parameter in model.named_parameters() if parameter.requires_grad]
     if not trainable:
         raise RuntimeError("PEFT created no trainable parameters; check target_modules_regex")
-    unexpected = [name for name in trainable if "model.language_model.layers." not in name]
+    unexpected = [name for name in trainable if trainable_prefix not in name]
     if unexpected:
         preview = ", ".join(unexpected[:10])
-        raise RuntimeError(f"trainable parameters escaped the text backbone: {preview}")
+        raise RuntimeError(f"trainable parameters escaped the text backbone ({trainable_prefix!r}): {preview}")
     if any("vision_tower" in name or "multi_modal_projector" in name for name in trainable):
         raise RuntimeError("vision or multimodal projector parameters must remain frozen")
 

@@ -80,9 +80,14 @@ img {
 
 .header-main {
   display: grid;
-  grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 520px) minmax(300px, 0.8fr);
+  /* Columns 1 and 3 must be allowed to shrink (minmax(0, ...)), otherwise the
+     right-hand actions — which grow when the Agentic Search model picker
+     appears — overflow their track and overlap the centre search box.
+     The centre search box is deliberately capped well below its old 520px so
+     the right-hand column keeps enough room to show persona names in full. */
+  grid-template-columns: minmax(0, 0.7fr) minmax(200px, 360px) minmax(0, 1.35fr);
   align-items: center;
-  gap: 24px;
+  gap: 16px;
   min-height: 82px;
   padding: 0 28px;
 }
@@ -98,7 +103,7 @@ img {
   justify-self: center;
   height: 46px;
   width: 100%;
-  max-width: 520px;
+  max-width: 360px;
   padding: 0 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
@@ -213,9 +218,10 @@ img {
 }
 
 .persona-trigger span {
-  max-width: 96px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* No max-width/ellipsis: the header now reserves enough room for the full
+     persona shortName ("Anonymous" is the longest at 9 chars). Clipping the
+     name looked broken on stage. */
+  overflow: visible;
 }
 
 .persona-trigger-avatar {
@@ -2184,5 +2190,85 @@ input:focus-visible {
 
   .persona-modal-footer .primary-button {
     width: 100%;
+  }
+}
+
+/* OpenSearch mark in the Agentic Search toggle. Rendered a little larger than
+   the 15px lucide icon it replaced: the mark has three interlocking swooshes
+   plus a thin arc, which mud up below ~18px. Dimmed when the toggle is off so
+   it still reads as inactive (the old icon inherited currentColor; an <img>
+   cannot, so opacity stands in for that). */
+.agentic-toggle-mark {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.query-understanding-toggle.is-off .agentic-toggle-mark {
+  opacity: 0.45;
+  filter: grayscale(1);
+}
+
+/* Agentic model picker (demo) — sits next to the Agentic Search toggle */
+.agentic-model-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+  font-size: 12px;
+  color: var(--ink, #2b2b2b);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.agentic-model-picker-label {
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agentic-model-picker select {
+  font: inherit;
+  font-size: 12px;
+  max-width: 132px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: #fff;
+  cursor: pointer;
+}
+
+/* The toggle + picker are the widest items in the header's right-hand column.
+   Keep them from being squeezed, and let the header shrink the softer items
+   (persona name) instead of overflowing into the centre search box. */
+.header-actions .query-understanding-toggle,
+.header-actions .agentic-model-picker {
+  flex: 0 0 auto;
+}
+
+.header-actions .persona-trigger {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+@media (max-width: 1420px) {
+  /* Reclaim width before anything can overlap by dropping the picker's "Model"
+     caption — never by clipping the persona name. */
+  .agentic-model-picker-label {
+    display: none;
+  }
+
+  .search-trigger {
+    max-width: 300px;
+  }
+}
+
+@media (max-width: 1280px) {
+  /* Tightest desktop case: shrink the search box further and trim the brand
+     tagline rather than truncating anything on the right. */
+  .search-trigger {
+    max-width: 240px;
+  }
+
+  .brand-lockup small {
+    display: none;
   }
 }

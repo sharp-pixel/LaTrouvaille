@@ -13,6 +13,11 @@ import {
 
 const node = process.env.OPENSEARCH_URL || "http://127.0.0.1:9200";
 const pipelineId = process.env.OPENSEARCH_AGENTIC_SEARCH_PIPELINE || "secondhand-agentic-search";
+const modelNameOverride = process.env.OPENSEARCH_AGENTIC_MODEL_NAME || "";
+const connectorNameOverride = process.env.OPENSEARCH_AGENTIC_CONNECTOR_NAME || "";
+const agentNameOverride = process.env.OPENSEARCH_AGENTIC_AGENT_NAME || "";
+const responseFilter =
+  process.env.OPENSEARCH_AGENTIC_RESPONSE_FILTER || "$.choices[0].message.content";
 const providedModelId = process.env.OPENSEARCH_AGENTIC_MODEL_ID || "";
 const fineTunedModel = process.env.AGENTIC_FINE_TUNED_MODEL || "psg-agentic-query-planner-v3";
 const baseModel = process.env.AGENTIC_BASE_MODEL || process.env.MISTRAL_MODEL || "ministral-3-8b-instruct-2512";
@@ -26,9 +31,14 @@ const sagemakerEndpoint = process.env.SAGEMAKER_MINISTRAL_ENDPOINT || "la-trouva
 const sagemakerModel = process.env.SAGEMAKER_MINISTRAL_MODEL || fineTunedModel;
 const structuredOutput = process.env.AGENTIC_STRUCTURED_OUTPUT !== "false";
 const dryRun = process.argv.includes("--dry-run");
+// Per-pipeline planner prompt override. The v3 contract is shared by every model,
+// but base Qwen needs the extra non-watch worked example (D3) to emit the persona
+// bool.should clause and the price ceiling; Sonnet and Ministral do not.
+const queryPlannerPromptFile =
+  process.env.OPENSEARCH_AGENTIC_SYSTEM_PROMPT_FILE || "opensearch-agentic-query-planner-v3.txt";
 const queryPlannerSystemPrompt = readFileSync(
   new URL(
-    "../../query-understanding-training/src/query_understanding/prompts/opensearch-agentic-query-planner-v3.txt",
+    `../../query-understanding-training/src/query_understanding/prompts/${queryPlannerPromptFile}`,
     import.meta.url,
   ),
   "utf8",
@@ -296,28 +306,30 @@ function modelRegistration(selectedModel, sagemakerCredentials) {
     };
   }
 
+  const connector = buildAgenticModelConnector({
+    provider,
+    selectedModel,
+    requestBody,
+    connectorBaseUrl,
+    modelApiKey,
+    sagemaker: {
+      region: sagemakerRegion,
+      endpointName: sagemakerEndpoint,
+      credentials: sagemakerCredentials,
+    },
+  });
+  if (connectorNameOverride) connector.name = connectorNameOverride;
   return {
-    name: `La Trouvaille agentic planner: ${selectedModel.model}`,
+    name: modelNameOverride || `La Trouvaille agentic planner: ${selectedModel.model}`,
     function_name: "remote",
     description: `Native agentic-search planner using the ${selectedModel.source} retail query model`,
-    connector: buildAgenticModelConnector({
-      provider,
-      selectedModel,
-      requestBody,
-      connectorBaseUrl,
-      modelApiKey,
-      sagemaker: {
-        region: sagemakerRegion,
-        endpointName: sagemakerEndpoint,
-        credentials: sagemakerCredentials,
-      },
-    }),
+    connector,
   };
 }
 
 function agentRegistration(modelId) {
   return {
-    name: "La Trouvaille native agentic search planner",
+    name: agentNameOverride || "La Trouvaille native agentic search planner",
     type: "flow",
     description: "Retail query planning with the native OpenSearch QueryPlanningTool",
     tools: [
@@ -325,7 +337,7 @@ function agentRegistration(modelId) {
         type: "QueryPlanningTool",
         parameters: {
           model_id: modelId,
-          response_filter: "$.choices[0].message.content",
+          response_filter: responseFilter,
           query_planner_system_prompt: queryPlannerSystemPrompt,
           query_planner_user_prompt: queryPlannerUserPrompt,
           fallback_query: AGENTIC_FALLBACK_QUERY,

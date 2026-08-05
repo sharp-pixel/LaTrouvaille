@@ -150,6 +150,12 @@ export function buildAgenticModelConnector({
   sagemaker,
 }) {
   const normalizedProvider = normalizeAgenticModelProvider(provider);
+  // ml-commons defaults connection/read timeouts to 30s. The FP8 Ministral planner
+  // needs ~15-17s and intermittently crossed 30s, surfacing as
+  // "Error communicating with remote model: Read timed out". Raise it here, at
+  // registration time: client_config must be set alongside the credential, because
+  // GET on a model redacts the credential and a later PUT would wipe it.
+  const connectorTimeoutSeconds = Number(process.env.AGENTIC_CONNECTOR_TIMEOUT_SECONDS || 120);
   const common = {
     name: `${normalizedProvider === "sagemaker" ? "SageMaker" : "OpenAI-compatible"} connector: ${selectedModel.model}`,
     description:
@@ -158,6 +164,10 @@ export function buildAgenticModelConnector({
         : "Connector to the locally or remotely served Ministral query planner",
     version: 1,
     parameters: { model: selectedModel.model },
+    client_config: {
+      connection_timeout: connectorTimeoutSeconds,
+      read_timeout: connectorTimeoutSeconds,
+    },
   };
 
   if (normalizedProvider === "sagemaker") {

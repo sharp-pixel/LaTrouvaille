@@ -29,6 +29,24 @@ const queryRewriteEndpoint = process.env.QUERY_REWRITE_ENDPOINT || "http://127.0
 const queryRewriteTimeoutMs = Number(process.env.QUERY_REWRITE_TIMEOUT_MS || 20);
 const agenticMode = process.env.OPENSEARCH_AGENTIC_SEARCH_MODE || "active";
 const agenticPipeline = process.env.OPENSEARCH_AGENTIC_SEARCH_PIPELINE || "secondhand-agentic-search";
+// Demo model picker: friendly labels for the agentic-lt-<model>-v1 pipelines.
+// Unmapped pipelines fall back to their id, so a new (e.g. fine-tuned) pipeline
+// appears in the UI automatically once created.
+const AGENTIC_PIPELINE_LABELS = {
+  "agentic-lt-claude-v1": "Sonnet",
+  "agentic-lt-qwen3-v1": "Qwen3",
+  "agentic-lt-qwen3-v2": "Qwen3-v2",
+  "agentic-lt-ministral-v1": "Ministral",
+  "agentic-lt-ministral-fp8-v1": "Ministral-FP8",
+  "agentic-lt-ministral-ft-v1": "Ministral-FT",
+};
+// Only pipelines matching this pattern are selectable from the client.
+const AGENTIC_PIPELINE_PATTERN = /^agentic-lt-[a-z0-9-]+$/;
+function resolveAgenticPipeline(requested) {
+  return typeof requested === "string" && AGENTIC_PIPELINE_PATTERN.test(requested)
+    ? requested
+    : agenticPipeline;
+}
 const configuredAgenticTimeoutMs = Number(process.env.OPENSEARCH_AGENTIC_SEARCH_TIMEOUT_MS);
 const agenticTimeoutMs =
   Number.isFinite(configuredAgenticTimeoutMs) && configuredAgenticTimeoutMs > 0
@@ -320,6 +338,9 @@ async function search(payload) {
     ? Math.min(Math.max(Math.trunc(requestedMaxPrice), 1), 20000)
     : 20000;
   const queryUnderstandingEnabled = payload.queryUnderstanding !== false;
+  // Per-request model selection: the UI picks which agentic-lt-<model>-v1 pipeline
+  // to route through. Falls back to the configured default when absent/invalid.
+  const effectivePipeline = resolveAgenticPipeline(payload.pipeline);
   const requestedSort = String(payload.sort || "Recommended");
   const selectedSort = ["Recommended", "Lowest price", "Newest", "Price drop"].includes(requestedSort)
     ? requestedSort
@@ -412,7 +433,7 @@ async function search(payload) {
       };
 
       const result = unwrap(
-        await client.search({ index, search_pipeline: agenticPipeline, body }, { requestTimeout: agenticTimeoutMs }),
+        await client.search({ index, search_pipeline: effectivePipeline, body }, { requestTimeout: agenticTimeoutMs }),
       );
       const agenticDslQuery = result.ext?.dsl_query || null;
       validateAgenticDsl({
@@ -440,14 +461,16 @@ async function search(payload) {
           dslQuery: agenticDslQuery,
           agentic: {
             status: "applied",
-            pipeline: agenticPipeline,
+            pipeline: effectivePipeline,
+            model: AGENTIC_PIPELINE_LABELS[effectivePipeline] || effectivePipeline,
           },
         },
         enhancements: {
           queryUnderstanding: "enabled",
           agentic: "applied",
           agenticMode,
-          agenticPipeline,
+          agenticPipeline: effectivePipeline,
+          agenticModel: AGENTIC_PIPELINE_LABELS[effectivePipeline] || effectivePipeline,
           dslQuery: agenticDslQuery,
           querqy: "not_called",
           rules: [],
@@ -456,7 +479,7 @@ async function search(payload) {
       };
     } catch (error) {
       throw serviceUnavailable(
-        `Agentic Search is unavailable (${agenticPipeline}): ${error.message}`,
+        `Agentic Search is unavailable (${effectivePipeline}): ${error.message}`,
         error,
       );
     }
@@ -556,6 +579,18 @@ const server = http.createServer(async (request, response) => {
       const indexExists = unwrap(await client.indices.exists({ index }));
       if (indexExists !== true) throw new Error(`OpenSearch index ${index} is unavailable`);
       send(response, 200, { ok: true, index });
+      return;
+    }
+
+    if (request.method === "GET" && request.url === "/agentic-pipelines") {
+      // Discover selectable agentic-lt-* pipelines so the UI model picker is
+      // data-driven (a new fine-tuned pipeline shows up with no code change).
+      const all = unwrap(await client.transport.request({ method: "GET", path: "/_search/pipeline" }));
+      const models = Object.keys(all || {})
+        .filter((id) => AGENTIC_PIPELINE_PATTERN.test(id))
+        .sort()
+        .map((id) => ({ id, label: AGENTIC_PIPELINE_LABELS[id] || id }));
+      send(response, 200, { models, default: agenticPipeline });
       return;
     }
 

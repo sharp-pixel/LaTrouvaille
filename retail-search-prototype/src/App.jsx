@@ -92,6 +92,9 @@ export function App() {
   const [cartOpen, setCartOpen] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [queryUnderstandingEnabled, setQueryUnderstandingEnabled] = useState(true);
+  // Model picker: which agentic-lt-<model>-v1 pipeline Agentic Search routes through.
+  const [agenticModels, setAgenticModels] = useState([]);
+  const [selectedPipeline, setSelectedPipeline] = useState("");
   const [personaSelectorOpen, setPersonaSelectorOpen] = useState(false);
   const [activePersona, setActivePersona] = useState(getInitialPersona);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -110,6 +113,25 @@ export function App() {
     totalRelation: "eq",
     enhancements: { querqy: "not_called", rules: [] },
   });
+
+  // Discover available agentic model pipelines (data-driven: a new fine-tuned
+  // pipeline appears here automatically). Default the picker to the server default.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${SEARCH_ENDPOINT}/agentic-pipelines`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled || !Array.isArray(data.models)) return;
+        setAgenticModels(data.models);
+        setSelectedPipeline((current) =>
+          current || data.default || (data.models[0] && data.models[0].id) || "",
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const localPlan = useMemo(
     () => queryUnderstandingEnabled
@@ -169,6 +191,7 @@ export function App() {
         sort,
         size: 96,
         queryUnderstanding: queryUnderstandingEnabled,
+        ...(selectedPipeline ? { pipeline: selectedPipeline } : {}),
         ...getPersonaSearchRequestIdentity(activePersona.id),
       }),
       signal: controller.signal,
@@ -220,7 +243,7 @@ export function App() {
       });
 
     return () => controller.abort();
-  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, maxPrice, mode, queryUnderstandingEnabled, searchPersona.id, sort]);
+  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, maxPrice, mode, queryUnderstandingEnabled, selectedPipeline, searchPersona.id, sort]);
 
   useEffect(() => {
     if (mode !== "results") return;
@@ -413,6 +436,9 @@ export function App() {
         persona={activePersona}
         queryUnderstandingEnabled={queryUnderstandingEnabled}
         onToggleQueryUnderstanding={() => setQueryUnderstandingEnabled((enabled) => !enabled)}
+        agenticModels={agenticModels}
+        selectedPipeline={selectedPipeline}
+        onSelectPipeline={setSelectedPipeline}
         menuButtonRef={mobileMenuButtonRef}
         onOpenPersona={openPersonaSelector}
         setMode={setMode}
@@ -537,6 +563,9 @@ function Header({
   persona,
   queryUnderstandingEnabled,
   onToggleQueryUnderstanding,
+  agenticModels,
+  selectedPipeline,
+  onSelectPipeline,
   menuButtonRef,
   onOpenPersona,
   setMode,
@@ -575,10 +604,31 @@ function Header({
             aria-checked={queryUnderstandingEnabled}
             onClick={onToggleQueryUnderstanding}
           >
-            <Sparkles size={15} />
-            <span>Smart search</span>
+            <img
+              className="agentic-toggle-mark"
+              src="/assets/opensearch-mark.svg"
+              alt=""
+              aria-hidden="true"
+            />
+            <span>Agentic Search</span>
             <i aria-hidden="true">{queryUnderstandingEnabled ? "On" : "Off"}</i>
           </button>
+          {queryUnderstandingEnabled && agenticModels && agenticModels.length > 0 && (
+            <label className="agentic-model-picker">
+              <span className="agentic-model-picker-label">Model</span>
+              <select
+                value={selectedPipeline}
+                onChange={(event) => onSelectPipeline(event.target.value)}
+                aria-label="Agentic Search model"
+              >
+                {agenticModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button
             className="persona-trigger"
             type="button"
@@ -1281,7 +1331,7 @@ function MobileNav({
         >
           <span>
             <small>Search controls</small>
-            <strong>Query understanding</strong>
+            <strong>Agentic Search</strong>
           </span>
           <b>{queryUnderstandingEnabled ? "On" : "Off"}</b>
         </button>

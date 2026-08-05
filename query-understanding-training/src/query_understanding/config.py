@@ -44,6 +44,10 @@ class LoraSettings(ConfigModel):
     alpha: int = Field(default=32, ge=1)
     dropout: float = Field(default=0.05, ge=0, lt=1)
     target_modules_regex: str = Field(min_length=1)
+    # Substring every trainable parameter name must contain, used to guard that
+    # LoRA only touches the text backbone. Defaults to the multimodal Ministral
+    # layout; text-only models (e.g. Qwen3) set this to "model.layers.".
+    trainable_prefix: str = Field(default="model.language_model.layers.", min_length=1)
 
 
 class TrainerSettings(ConfigModel):

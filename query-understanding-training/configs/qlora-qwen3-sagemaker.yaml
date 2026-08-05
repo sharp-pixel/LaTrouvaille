@@ -1,0 +1,54 @@
+model:
+  name_or_path: Qwen/Qwen3-8B
+  revision: b968826d9c46dd6066d109eabc6255188de91218
+  trust_remote_code: false
+
+objective:
+  name: opensearch_agentic_query_planner_v3
+  system_prompt_file: ../src/query_understanding/prompts/opensearch-agentic-query-planner-v3.txt
+  user_prompt_file: ../src/query_understanding/prompts/opensearch-agentic-query-planner-user-v3.txt
+
+data:
+  train_file: ../data/train.jsonl
+  eval_file: ../data/eval.jsonl
+  policy_file: policy-prototype-v1.yaml
+
+quantization:
+  load_in_4bit: true
+  quant_type: nf4
+  use_double_quant: true
+  compute_dtype: bfloat16
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  # Qwen3-8B is a text-only Qwen3ForCausalLM: layers live at model.layers.*
+  # (no multimodal language_model. prefix, no q/k/v naming change vs Ministral).
+  target_modules_regex: '^model\.layers\.\d+\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))$'
+  trainable_prefix: 'model.layers.'
+
+trainer:
+  output_dir: /opt/ml/model/qlora-agentic-v3
+  sequence_length: 2048
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  gradient_checkpointing: true
+  learning_rate: 0.0001
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  num_train_epochs: 2
+  max_steps: -1
+  max_grad_norm: 0.3
+  optim: paged_adamw_8bit
+  logging_steps: 10
+  save_steps: 250
+  eval_steps: 250
+  save_total_limit: 2
+  seed: 42
+  bf16: true
+  fp16: false
+  tf32: true
+  packing: false
+  report_to: []

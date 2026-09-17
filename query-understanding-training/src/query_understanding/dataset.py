@@ -17,6 +17,7 @@ from query_understanding.agentic_objective import (
 )
 from query_understanding.policy import CompilerPolicy, PolicyViolation, validate_agentic_request_body
 from query_understanding.schemas import TrainingExample
+from query_understanding.target_semantics import validate_training_target
 
 SYSTEM_PROMPT = load_system_prompt()
 USER_PROMPT_TEMPLATE = load_user_prompt_template()
@@ -80,6 +81,7 @@ def validate_dataset(path: Path, policy: CompilerPolicy) -> ValidationReport:
                     policy,
                     example.expectations,
                 )
+                validate_training_target(example)
             except (json.JSONDecodeError, ValidationError, PolicyViolation, ValueError) as error:
                 issues.append(DatasetIssue(line_number, example_id, str(error)))
                 continue

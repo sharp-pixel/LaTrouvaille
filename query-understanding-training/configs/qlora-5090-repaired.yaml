@@ -1,0 +1,51 @@
+model:
+  name_or_path: mistralai/Ministral-3-8B-Instruct-2512-BF16
+  revision: 06cc81bfd6e45321d8fc8f816576c5b6ac67ec22
+  trust_remote_code: false
+
+objective:
+  name: opensearch_agentic_query_planner_v3
+  system_prompt_file: ../src/query_understanding/prompts/opensearch-agentic-query-planner-v3.txt
+  user_prompt_file: ../src/query_understanding/prompts/opensearch-agentic-query-planner-user-v3.txt
+
+data:
+  train_file: ../data/train.jsonl
+  eval_file: ../data/eval.jsonl
+  policy_file: policy-prototype-v1.yaml
+
+quantization:
+  load_in_4bit: true
+  quant_type: nf4
+  use_double_quant: true
+  compute_dtype: bfloat16
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  # The checkpoint is multimodal. This regex deliberately excludes the vision tower.
+  target_modules_regex: '^model\.language_model\.layers\.\d+\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))$'
+
+trainer:
+  output_dir: ../artifacts/qlora-agentic-v3-repaired
+  sequence_length: 2112
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  gradient_checkpointing: true
+  learning_rate: 0.0001
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  num_train_epochs: 2
+  max_grad_norm: 0.3
+  optim: paged_adamw_8bit
+  logging_steps: 10
+  save_steps: 250
+  eval_steps: 250
+  save_total_limit: 2
+  seed: 42
+  bf16: true
+  fp16: false
+  tf32: true
+  packing: false
+  report_to: []

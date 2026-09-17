@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass
 from hashlib import sha256
@@ -294,6 +295,9 @@ class Scenario:
     text_operator: str
     split_group_id: str | None = None
     gender_affinities: tuple[str, ...] = ()
+    shopper_maximum_price: int | None = None
+    infer_category: bool = False
+    target_text_query: str | None = None
 
 
 class _ScenarioCommon(TypedDict):
@@ -302,6 +306,7 @@ class _ScenarioCommon(TypedDict):
     maximum_price: int
     result_size: int
     track_total_hits: int
+    shopper_maximum_price: int | None
 
 
 @dataclass(frozen=True)
@@ -409,7 +414,9 @@ def _build_scenario(slice_name: DatasetSlice, index: int) -> Scenario:
         "maximum_price": PRICE_LIMITS[(index * 5 + 3) % len(PRICE_LIMITS)],
         "result_size": RESULT_SIZES[(index * 7 + 1) % len(RESULT_SIZES)],
         "track_total_hits": TOTAL_HITS[(index * 3 + 1) % len(TOTAL_HITS)],
+        "shopper_maximum_price": None,
     }
+    common["shopper_maximum_price"] = _shopper_budget(common["group_id"], common["maximum_price"])
     if slice_name == DatasetSlice.CLEAN_SINGLE_CATEGORY and index == 0:
         return Scenario(
             group_id=common["group_id"],
@@ -420,10 +427,34 @@ def _build_scenario(slice_name: DatasetSlice, index: int) -> Scenario:
             material=None,
             country=None,
             maximum_price=15_000,
+            shopper_maximum_price=15_000,
             result_size=24,
             track_total_hits=10_000,
             sort_mode="recommended",
             text_operator="or",
+        )
+    watch_style_cases = {
+        10: ("formal watch", 20_000),
+        20: ("suit watch", 5_000),
+        30: ("dress watch", 8_000),
+        90: ("dress watch", 12_000),
+        140: ("suit watch", 1_000),
+        160: ("formal watch", 15_000),
+    }
+    if slice_name == DatasetSlice.CLEAN_SINGLE_CATEGORY and index in watch_style_cases:
+        phrase, ui_maximum = watch_style_cases[index]
+        common["maximum_price"] = ui_maximum
+        common["shopper_maximum_price"] = None
+        return Scenario(
+            **common,
+            base_text_query=phrase,
+            categories=("watches",),
+            condition=None,
+            material=None,
+            country=None,
+            sort_mode="recommended",
+            text_operator="or",
+            infer_category=True,
         )
     if slice_name == DatasetSlice.CLEAN_SINGLE_CATEGORY:
         noun = CATEGORY_NOUNS[product.category][index % 5]
@@ -431,6 +462,7 @@ def _build_scenario(slice_name: DatasetSlice, index: int) -> Scenario:
         return Scenario(
             **common,
             base_text_query=f"{modifier} {noun}",
+            infer_category=index % 2 == 0,
             categories=(product.category,),
             condition=None,
             material=None,
@@ -456,6 +488,7 @@ def _build_scenario(slice_name: DatasetSlice, index: int) -> Scenario:
         return Scenario(
             **common,
             base_text_query=f"{product.brand} {product.model} {qualifier}",
+            infer_category=index % 2 == 0,
             categories=(product.category,),
             condition=None,
             material=None,
@@ -472,15 +505,9 @@ def _build_scenario(slice_name: DatasetSlice, index: int) -> Scenario:
         )
         facet_pattern = index % 4
         gender_affinities = (
-            (("men", "unisex") if (index // 4) % 2 else ("women", "unisex"))
-            if facet_pattern == 3
-            else ()
+            (("men", "unisex") if (index // 4) % 2 else ("women", "unisex")) if facet_pattern == 3 else ()
         )
-        gender_intent = (
-            f"{'men' if gender_affinities[0] == 'men' else 'women'}'s "
-            if gender_affinities
-            else ""
-        )
+        gender_intent = f"{'men' if gender_affinities[0] == 'men' else 'women'}'s " if gender_affinities else ""
         return Scenario(
             **common,
             base_text_query=f"{gender_intent}{product.model} {STYLE_MODIFIERS[(index // len(PRODUCTS)) % 6]}",
@@ -560,6 +587,7 @@ def _build_scenario(slice_name: DatasetSlice, index: int) -> Scenario:
     return Scenario(
         **common,
         base_text_query=f"{injection} {suffix}",
+        target_text_query=suffix,
         categories=(category,),
         condition=None,
         material=None,
@@ -605,6 +633,7 @@ def _build_ranking_mode_scenario(index: int) -> Scenario:
         material=material,
         country=country,
         maximum_price=maximum_price,
+        shopper_maximum_price=_shopper_budget(family_id, maximum_price),
         result_size=RESULT_SIZES[(family_index * 7 + 1) % len(RESULT_SIZES)],
         track_total_hits=TOTAL_HITS[(family_index * 3 + 1) % len(TOTAL_HITS)],
         sort_mode=sort_mode,
@@ -632,12 +661,15 @@ def _persona_for_scenario(persona: dict[str, object], scenario: Scenario) -> dic
 
 def _build_example(scenario: Scenario, variant: int, persona: dict[str, object]) -> TrainingExample:
     persona_maximum = 1_500 if persona.get("id") == "first-luxury-purchase" else scenario.maximum_price
-    effective_maximum = min(scenario.maximum_price, persona_maximum)
+    effective_maximum = min(
+        scenario.maximum_price, persona_maximum, scenario.shopper_maximum_price or scenario.maximum_price
+    )
     filters, constraints = _filters_and_constraints(scenario, effective_maximum)
     required_filters = [
         clause
         for clause in filters
         if _filter_clause_field(clause) not in {"gender_affinity", "price"}
+        and not (scenario.infer_category and _filter_clause_field(clause) == "category")
     ]
     contract: dict[str, object] = {
         "required_filters": required_filters,
@@ -649,7 +681,11 @@ def _build_example(scenario: Scenario, variant: int, persona: dict[str, object])
     if scenario.sort_mode != "recommended":
         contract["rank_features"] = False
     contract["persona"] = persona
-    summary = _normalized_summary(scenario, scenario.maximum_price)
+    summary = _normalized_summary(scenario)
+    # The fifth persona previously duplicated an existing input/target pair.
+    # Keep it in the same split, but teach request-scaffolding cleanup instead.
+    if variant == 4 and scenario.slice != DatasetSlice.MAPPING_VARIATION:
+        summary = f"please find {summary}"
     query_text = (
         f"Shopper request: {summary}\n"
         f"Trusted planner context: {json.dumps(contract, ensure_ascii=False, separators=(',', ':'))}\n"
@@ -735,9 +771,9 @@ def _target_body(
         "must": [
             {
                 "multi_match": {
-                    "query": scenario.base_text_query,
+                    "query": _target_text(scenario),
                     "fields": TEXT_FIELDS,
-                    "operator": scenario.text_operator,
+                    "operator": "or" if _is_watch_style(scenario.base_text_query) else scenario.text_operator,
                 }
             }
         ],
@@ -789,16 +825,35 @@ def _mapping_and_fields(scenario: Scenario, variant: int) -> tuple[dict[str, Any
     return mapping, fields
 
 
-def _normalized_summary(scenario: Scenario, maximum_price: int) -> str:
+def _is_watch_style(text: str) -> bool:
+    return re.search(r"\b(?:dress|formal|suit) watch\b", text, re.IGNORECASE) is not None
+
+
+def _target_text(scenario: Scenario) -> str:
+    if scenario.target_text_query is not None:
+        return scenario.target_text_query
+    if _is_watch_style(scenario.base_text_query):
+        return "watch"
+    return re.sub(r"\b(?:men|women)'s\s+", "", scenario.base_text_query, flags=re.IGNORECASE)
+
+
+def _shopper_budget(group_id: str, ui_maximum: int) -> int | None:
+    return (None, max(1, ui_maximum // 2), min(20_000, ui_maximum * 2), ui_maximum)[
+        _stable_int(f"{group_id}:shopper-budget") % 4
+    ]
+
+
+def _normalized_summary(scenario: Scenario) -> str:
     base = scenario.base_text_query
-    price = maximum_price
     if scenario.sort_mode == "lowest_price":
-        return f"cheapest {base} under {price}"
-    if scenario.sort_mode == "newest":
-        return f"newest {base} under {price}"
-    if scenario.sort_mode == "price_drop":
-        return f"{base} with biggest price drops under {price}"
-    return f"{base} under {price}"
+        base = f"cheapest {base}"
+    elif scenario.sort_mode == "newest":
+        base = f"newest {base}"
+    elif scenario.sort_mode == "price_drop":
+        base = f"{base} with biggest price drops"
+    if scenario.shopper_maximum_price is not None:
+        base = f"{base} under {scenario.shopper_maximum_price}"
+    return base
 
 
 def _stable_digest(value: str) -> str:

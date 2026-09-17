@@ -69,7 +69,7 @@ services:
     volumes:
       - huggingface-cache:/root/.cache/huggingface
       - type: bind
-        source: ${VLLM_ADAPTER_PATH:-../query-understanding-training/artifacts/qlora-agentic-v3/adapter}
+        source: ${VLLM_ADAPTER_PATH:-../query-understanding-training/artifacts/qlora-agentic-v3-repaired/adapter}
         target: /adapters/query-planner
         read_only: true
         bind:

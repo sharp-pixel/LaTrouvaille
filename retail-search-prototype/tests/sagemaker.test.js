@@ -594,6 +594,30 @@ test("actual SageMaker provisioning defaults to the alias served by a fresh depl
   assert.equal(preview.selectedModel.source, "base");
 });
 
+test("provisioned vLLM schema matches fine-tuning key order and keeps sort optional", () => {
+  const env = { ...process.env, AGENTIC_MODEL_PROVIDER: "sagemaker", AGENTIC_STRUCTURED_OUTPUT: "true" };
+  delete env.OPENSEARCH_AGENTIC_MODEL_ID;
+  const preview = JSON.parse(execFileSync(process.execPath, [
+    new URL("../scripts/configure-agentic-search.mjs", import.meta.url).pathname, "--dry-run",
+  ], { env, encoding: "utf8" }));
+  const requestBody = JSON.parse(preview.modelRegistration.connector.actions[0].request_body);
+  const schema = requestBody.response_format.json_schema.schema;
+  // The adapter was trained on recursively key-sorted JSON. In particular, an
+  // optional sort belongs between size and track_total_hits, not after query.
+  assert.deepEqual(Object.keys(schema.properties), ["query", "size", "sort", "track_total_hits"]);
+  assert.equal(schema.required.includes("sort"), false);
+  const bool = schema.properties.query.properties.bool;
+  assert.deepEqual(Object.keys(bool.properties), ["filter", "must", "should"]);
+  const multiMatch = bool.properties.must.items.properties.multi_match;
+  assert.deepEqual(Object.keys(multiMatch.properties), ["fields", "operator", "query"]);
+  const [persona, rankFeature] = bool.properties.should.items.anyOf;
+  assert.deepEqual(Object.keys(persona.properties.multi_match.properties), ["boost", "fields", "operator", "query"]);
+  assert.deepEqual(Object.keys(rankFeature.properties.rank_feature.properties), ["boost", "field"]);
+  assert.deepEqual(multiMatch.properties.fields.items.enum, ["title^5", "brand^3", "canonical_text^3", "description"]);
+  assert.deepEqual(Object.keys(schema.properties.sort.items.properties.old_price.properties), ["missing", "order"]);
+  assert.equal(schema.additionalProperties, false);
+});
+
 test("rollback retains replacement resources while its endpoint deletion is unconfirmed", () => {
   const deployment = buildSageMakerDeployment({ region: "eu-west-1", executionRoleArn: "test-role" });
   const calls = [];

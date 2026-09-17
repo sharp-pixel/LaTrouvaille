@@ -54,13 +54,16 @@ function validateSageMakerTarget({ region, endpointName, credentials }) {
   }
 }
 
-function omitUnsupportedVllmSchemaKeywords(value) {
-  if (Array.isArray(value)) return value.map(omitUnsupportedVllmSchemaKeywords);
+function prepareVllmSchema(value) {
+  if (Array.isArray(value)) return value.map(prepareVllmSchema);
   if (!value || typeof value !== "object") return value;
+  // vLLM's grammar follows schema property order. Match the recursively sorted
+  // JSON completions used for fine-tuning, including optional keys such as sort.
   return Object.fromEntries(
     Object.entries(value)
       .filter(([key]) => key !== "uniqueItems")
-      .map(([key, item]) => [key, omitUnsupportedVllmSchemaKeywords(item)]),
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, item]) => [key, prepareVllmSchema(item)]),
   );
 }
 
@@ -74,7 +77,7 @@ export function prepareAgenticRequestBody({ provider, requestBody }) {
       ...requestBody.response_format,
       json_schema: {
         ...requestBody.response_format.json_schema,
-        schema: omitUnsupportedVllmSchemaKeywords(schema),
+        schema: prepareVllmSchema(schema),
       },
     },
   };

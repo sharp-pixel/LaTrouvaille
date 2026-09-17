@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
@@ -22,6 +22,7 @@ import {
 } from "./data/personas.js";
 import { buildLocalPersonalizationPlan } from "./lib/agentic-search.js";
 import { createLiteralQueryPlan, createQueryUnderstanding } from "./lib/search.js";
+import { useDialogFocus } from "./lib/use-dialog-focus.js";
 import { getRecentUbiEvents, recordUbiEvent, recordUbiQuery } from "./lib/ubi.js";
 
 const SEARCH_ENDPOINT = import.meta.env.VITE_SEARCH_ENDPOINT || "http://127.0.0.1:8790";
@@ -33,19 +34,19 @@ const discoveryEdits = [
   {
     title: "Carried well",
     query: "soft leather bag",
-    image: "/assets/products/04-black-shoulder-bag.png",
+    image: "/assets/products/studio-v1/celenne-knot-black-leather-tote.png",
     meta: "Enduring leather shapes with character",
   },
   {
     title: "After-dark silk",
     query: "silk dress",
-    image: "/assets/products/05-silk-maxi-dress.png",
+    image: "/assets/products/studio-v1/zelie-varenne-burgundy-silk-maxi-dress.png",
     meta: "Fluid pieces for the long light",
   },
   {
     title: "Soft structure",
     query: "tailored wool",
-    image: "/assets/products/07-wool-blazer.png",
+    image: "/assets/products/studio-v1/belladonna-tailored-wool-blazer.png",
     meta: "Quiet tailoring with a lived-in ease",
   },
 ];
@@ -84,6 +85,7 @@ export function App() {
   const [activeQuery, setActiveQuery] = useState("");
   const [mode, setMode] = useState("home");
   const [sort, setSort] = useState("Recommended");
+  const [searchAttempt, setSearchAttempt] = useState(0);
   const [filters, setFilters] = useState({ category: [], condition: [], material: [], country: [] });
   const [maxPrice, setMaxPrice] = useState(DEFAULT_MAX_PRICE);
   const [favorites, setFavorites] = useState(new Set(["MR-0000001", "MR-0000009"]));
@@ -148,7 +150,7 @@ export function App() {
   );
   const requestKey = JSON.stringify({
     activeQuery, filters, maxPrice, sort, personaId: activePersona.id,
-    queryUnderstanding: queryUnderstandingEnabled, pipeline: selectedPipeline,
+    queryUnderstanding: queryUnderstandingEnabled, pipeline: selectedPipeline, searchAttempt,
   });
   const activePlan = useMemo(() => {
     const returnedPlan = searchResponse.requestKey === requestKey ? searchResponse.queryPlan : null;
@@ -460,6 +462,8 @@ export function App() {
           ubiQueryId={ubiQueryId}
           ubiEvents={ubiEvents}
           searchMeta={searchResponse}
+          onRetry={() => setSearchAttempt((attempt) => attempt + 1)}
+          onEditSearch={() => setSearchOpen(true)}
           clearFilters={() => {
             setFilters({ category: [], condition: [], material: [], country: [] });
             setMaxPrice(DEFAULT_MAX_PRICE);
@@ -489,26 +493,17 @@ export function App() {
       )}
 
       {filterDrawerOpen && (
-        <div className="drawer-backdrop" onClick={() => setFilterDrawerOpen(false)}>
-          <aside className="mobile-filter-drawer" onClick={(event) => event.stopPropagation()}>
-            <div className="drawer-head">
-              <h2>Filters</h2>
-              <button className="icon-button" type="button" onClick={() => setFilterDrawerOpen(false)} aria-label="Close filters">
-                <X size={18} />
-              </button>
-            </div>
-            <FilterPanel
-              filters={filters}
-              toggleFilter={toggleFilter}
-              maxPrice={maxPrice}
-              setMaxPrice={setMaxPrice}
-              clearFilters={() => {
-                setFilters({ category: [], condition: [], material: [], country: [] });
-                setMaxPrice(DEFAULT_MAX_PRICE);
-              }}
-            />
-          </aside>
-        </div>
+        <FilterDrawer
+          onClose={() => setFilterDrawerOpen(false)}
+          filters={filters}
+          toggleFilter={toggleFilter}
+          maxPrice={maxPrice}
+          setMaxPrice={setMaxPrice}
+          clearFilters={() => {
+            setFilters({ category: [], condition: [], material: [], country: [] });
+            setMaxPrice(DEFAULT_MAX_PRICE);
+          }}
+        />
       )}
 
       {cartOpen && (
@@ -590,6 +585,8 @@ function Header({
             type="button"
             role="switch"
             aria-checked={queryUnderstandingEnabled}
+            aria-label="Query understanding"
+            title="Understand intent and personalize results. Turn off to search your exact words."
             onClick={onToggleQueryUnderstanding}
           >
             <img
@@ -598,7 +595,7 @@ function Header({
               alt=""
               aria-hidden="true"
             />
-            <span>Agentic Search</span>
+            <span>Query understanding</span>
             <i aria-hidden="true">{queryUnderstandingEnabled ? "On" : "Off"}</i>
           </button>
           {queryUnderstandingEnabled && agenticModels && agenticModels.length > 0 && (
@@ -625,7 +622,7 @@ function Header({
             onClick={(event) => onOpenPersona(event.currentTarget)}
           >
             <img className="persona-trigger-avatar" src={persona.image} alt="" />
-            <span>{persona.id === "anonymous" ? "Sign in" : persona.shortName}</span>
+            <span>{persona.id === "anonymous" ? "Demo persona" : persona.shortName}</span>
             <ChevronDown size={14} />
           </button>
           <button className="bag-button" type="button" aria-label={`Open bag, ${cartCount} items`} onClick={onOpenCart}>
@@ -648,7 +645,8 @@ function Header({
             <input
               autoFocus
               value={query}
-              placeholder="Describe the piece you have in mind..."
+              aria-label="Search the collection"
+              placeholder="Describe a piece..."
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") runSearch();
@@ -721,7 +719,8 @@ function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, set
             <Search size={20} />
             <input
               value={query}
-              placeholder="Try “a small gold watch”"
+              aria-label="Search the collection"
+              placeholder="Try “gold watch”"
               onChange={(event) => setQuery(event.target.value)}
             />
             <button type="submit">Search</button>
@@ -737,8 +736,8 @@ function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, set
             >
               <img src={product.image} alt={`${product.brand} ${product.title}`} />
               <span>
-                <strong>{product.brand}</strong>
-                {formatPrice(product.price)}
+                <strong>{product.title}</strong>
+                <b>{formatPrice(product.price)}</b>
               </span>
             </button>
           ))}
@@ -782,36 +781,10 @@ function HomePage({ onCategory, onProduct, favorites, toggleFavorite, query, set
         </div>
       </section>
 
-      <section className="editorial-band">
-        <div>
-          <p className="eyebrow">The seasonal note</p>
-          <h2>The blue hour edit</h2>
-          <p>Silk, polished metal and small silhouettes selected for the long light after sunset.</p>
-        </div>
-        <div className="editorial-links">
-          {[
-            ["Silk after dark", "silk dress"],
-            ["Small bags", "small bag"],
-            ["Polished gold", "gold jewellery"],
-            ["Evening shoes", "evening shoes"],
-          ].map(([label, search]) => (
-            <button key={label} type="button" onClick={() => runSearch(search)}>
-              {label}
-            </button>
-          ))}
-        </div>
-      </section>
-
       <ProductCarousel
         title="Newly discovered"
+        onViewAll={() => runSearch("new in")}
         items={newArrivalProducts}
-        favorites={favorites}
-        toggleFavorite={toggleFavorite}
-        onProduct={onProduct}
-      />
-      <ProductCarousel
-        title="Worth a second look"
-        items={[...products].reverse().slice(0, 8)}
         favorites={favorites}
         toggleFavorite={toggleFavorite}
         onProduct={onProduct}
@@ -843,13 +816,12 @@ function ResultsPage({
   searchMeta,
   clearFilters,
   setFilterDrawerOpen,
+  onRetry,
+  onEditSearch,
 }) {
   const resultCount = searchMeta?.total ?? products.length;
-  const [sortMenuOpen, setSortMenuOpen] = useState(false);
-  const chooseSort = (option) => {
-    setSort(option);
-    setSortMenuOpen(false);
-  };
+  const activeFilterCount = Object.values(filters).reduce((sum, values) => sum + values.length, 0)
+    + (maxPrice < DEFAULT_MAX_PRICE ? 1 : 0);
 
   return (
     <main className="results-page">
@@ -857,15 +829,15 @@ function ResultsPage({
         <div>
           <p className="eyebrow">Search results</p>
           <h1>{activeQuery}</h1>
-          <p>{formatResultCount(resultCount, searchMeta?.totalRelation)} unique items available now</p>
+          <p aria-live="polite">
+            {searchMeta?.status === "error" ? "We could not load this selection."
+              : searchMeta?.status === "loading" ? "Finding pieces for you..."
+                : `${formatResultCount(resultCount, searchMeta?.totalRelation)} listings available now`}
+          </p>
         </div>
-        <button className="mobile-filter-button" type="button" onClick={() => setFilterDrawerOpen(true)}>
-          <SlidersHorizontal size={18} />
-          Filters
-        </button>
       </section>
 
-      {activePlan.queryUnderstanding?.status !== "bypassed" && (
+      {searchMeta?.status === "ready" && activePlan.queryUnderstanding?.status !== "bypassed" && (
         <section className="query-strip">
           <div className="query-intent">
             <Sparkles size={18} />
@@ -896,57 +868,31 @@ function ResultsPage({
         </aside>
         <section className="catalogue">
           <div className="catalogue-head">
-            <div className="sort-row" aria-label="Sort results">
-              {SORT_OPTIONS.map((option) => (
-                <button
-                  key={option}
-                  className={sort === option ? "active" : ""}
-                  type="button"
-                  onClick={() => chooseSort(option)}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-            <div className="sort-menu-wrap">
-              <button
-                className="sort-menu"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded={sortMenuOpen}
-                onClick={() => setSortMenuOpen((open) => !open)}
-              >
-                Sort: {sort}
-                <ChevronDown size={16} />
-              </button>
-              {sortMenuOpen && (
-                <div className="sort-popover" role="menu" aria-label="Sort options">
-                  {SORT_OPTIONS.map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={sort === option}
-                      className={sort === option ? "active" : ""}
-                      onClick={() => chooseSort(option)}
-                    >
-                      <span>{option}</span>
-                      {sort === option && <Check size={16} />}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            <button className="mobile-filter-button" type="button" onClick={() => setFilterDrawerOpen(true)}>
+              <SlidersHorizontal size={18} />
+              Filters{activeFilterCount ? ` (${activeFilterCount})` : ""}
+            </button>
+            <label className="sort-control">
+              <span>Sort</span>
+              <select aria-label="Sort results" value={sort} onChange={(event) => setSort(event.target.value)}>
+                {SORT_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+              </select>
+            </label>
           </div>
           {searchMeta?.status === "loading" ? (
             <div className="empty-results" aria-live="polite">
-              <h2>Searching OpenSearch</h2>
-              <p>Waiting for the search service to respond.</p>
+              <h2>Finding your next discovery</h2>
+              <p>Searching the collection for your selection.</p>
             </div>
           ) : searchMeta?.status === "error" ? (
             <div className="empty-results" role="alert">
               <h2>Search unavailable</h2>
-              <p>{searchMeta.error || "The OpenSearch API is not running."}</p>
+              <p>We could not complete your search. Your query and filters are saved.</p>
+              <button type="button" onClick={onRetry}>Try again</button>
+              <details className="search-diagnostics">
+                <summary>Technical details</summary>
+                <p>{searchMeta.error || "The search service is unavailable."}</p>
+              </details>
             </div>
           ) : products.length ? (
             <div className="product-grid">
@@ -963,11 +909,11 @@ function ResultsPage({
               ))}
             </div>
           ) : (
-            <div className="empty-results">
-              <h2>No matching items</h2>
-              <p>Try a broader query or clear a filter.</p>
-              <button type="button" onClick={clearFilters}>
-                Clear filters
+            <div className="empty-results" aria-live="polite">
+              <h2>No matching pieces this time</h2>
+              <p>{activeFilterCount ? "Try removing a filter or describing the piece more broadly." : "Try a different material, style or a broader description."}</p>
+              <button type="button" onClick={activeFilterCount ? clearFilters : onEditSearch}>
+                {activeFilterCount ? "Clear filters" : "Edit search"}
               </button>
             </div>
           )}
@@ -1029,13 +975,31 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
   );
 }
 
+function FilterDrawer({ onClose, ...filterProps }) {
+  const dialogRef = useDialogFocus(onClose);
+  return (
+    <div className="drawer-backdrop" onClick={onClose}>
+      <aside ref={dialogRef} className="mobile-filter-drawer" role="dialog" aria-modal="true" aria-label="Filters" tabIndex={-1} onClick={(event) => event.stopPropagation()}>
+        <div className="drawer-head">
+          <h2>Refine your selection</h2>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="Close filters"><X size={18} /></button>
+        </div>
+        <FilterPanel {...filterProps} />
+        <div className="filter-drawer-footer"><button className="primary-button" type="button" onClick={onClose}>Show results</button></div>
+      </aside>
+    </div>
+  );
+}
+
 function FilterPanel({ filters, toggleFilter, maxPrice, setMaxPrice, clearFilters }) {
-  const activeCount = Object.values(filters).reduce((total, values) => total + values.length, 0);
+  const panelId = useId();
+  const [expanded, setExpanded] = useState({ category: true });
+  const activeCount = Object.values(filters).reduce((total, values) => total + values.length, 0) + (maxPrice < DEFAULT_MAX_PRICE ? 1 : 0);
   return (
     <div className="filter-panel">
       <div className="filter-title">
         <h2>Filters</h2>
-        <button type="button" onClick={clearFilters}>
+        <button type="button" onClick={clearFilters} disabled={!activeCount}>
           Clear {activeCount ? `(${activeCount})` : ""}
         </button>
       </div>
@@ -1046,6 +1010,8 @@ function FilterPanel({ filters, toggleFilter, maxPrice, setMaxPrice, clearFilter
         </div>
         <input
           type="range"
+          aria-label="Maximum price"
+          aria-valuetext={formatPrice(maxPrice)}
           min="100"
           max="20000"
           step="50"
@@ -1055,11 +1021,15 @@ function FilterPanel({ filters, toggleFilter, maxPrice, setMaxPrice, clearFilter
       </div>
       {filterGroups.map((group) => (
         <div className="filter-group" key={group.key}>
-          <button className="accordion-row" type="button">
-            <span>{group.label}</span>
+          <button className="accordion-row" type="button"
+            aria-expanded={Boolean(expanded[group.key])}
+            aria-controls={`${panelId}-${group.key}`}
+            onClick={() => setExpanded((current) => ({ ...current, [group.key]: !current[group.key] }))}
+          >
+            <span>{group.label}{filters[group.key].length ? ` (${filters[group.key].length})` : ""}</span>
             <ChevronDown size={16} />
           </button>
-          <div className="check-list">
+          <div className="check-list" id={`${panelId}-${group.key}`} hidden={!expanded[group.key]}>
             {group.options.map((option) => (
               <label key={option}>
                 <input
@@ -1077,12 +1047,12 @@ function FilterPanel({ filters, toggleFilter, maxPrice, setMaxPrice, clearFilter
   );
 }
 
-function ProductCarousel({ title, items, favorites, toggleFavorite, onProduct }) {
+function ProductCarousel({ title, items, favorites, toggleFavorite, onProduct, onViewAll }) {
   return (
     <section className="carousel-section">
       <div className="section-head">
         <h2>{title}</h2>
-        <button type="button">
+        <button type="button" onClick={onViewAll}>
           View all
           <ArrowRight size={16} />
         </button>
@@ -1135,40 +1105,7 @@ function ProductCard({ product, favorite, toggleFavorite, onProduct, ordinal = 0
 function PersonaModal({ persona, onSelect, onClose }) {
   const [draftPersonaId, setDraftPersonaId] = useState(persona.id);
   const draftPersona = getPersonaById(draftPersonaId);
-  const dialogRef = useRef(null);
-  const onCloseRef = useRef(onClose);
-
-  useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
-
-  useEffect(() => {
-    const handleKeyDown = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-
-      if (event.key !== "Tab") return;
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const focusable = [...dialog.querySelectorAll("button:not([disabled]), input:not([disabled])")];
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-
-      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  const dialogRef = useDialogFocus(onClose);
 
   const movePersonaSelection = (event, currentIndex) => {
     const directions = {
@@ -1208,7 +1145,6 @@ function PersonaModal({ persona, onSelect, onClose }) {
             type="button"
             aria-label="Close persona selector"
             onClick={onClose}
-            autoFocus
           >
             <X size={18} />
           </button>
@@ -1279,9 +1215,10 @@ function MobileNav({
   setMode,
   runSearch,
 }) {
+  const dialogRef = useDialogFocus(onClose);
   return (
     <div className="drawer-backdrop" onClick={onClose}>
-      <aside className="mobile-nav" onClick={(event) => event.stopPropagation()}>
+      <aside ref={dialogRef} className="mobile-nav" role="dialog" aria-modal="true" aria-label="Navigation" tabIndex={-1} onClick={(event) => event.stopPropagation()}>
         <div className="drawer-head">
           <strong>{BRAND_NAME}</strong>
           <button className="icon-button" type="button" aria-label="Close menu" onClick={onClose}>
@@ -1307,7 +1244,7 @@ function MobileNav({
         >
           <span>
             <small>Demo persona</small>
-            <strong>{persona.id === "anonymous" ? "Sign in" : persona.name}</strong>
+            <strong>{persona.id === "anonymous" ? "Anonymous" : persona.name}</strong>
           </span>
           <ChevronRight size={16} />
         </button>
@@ -1316,11 +1253,13 @@ function MobileNav({
           type="button"
           role="switch"
           aria-checked={queryUnderstandingEnabled}
+          aria-label="Query understanding"
+          title="Understand intent and personalize results. Turn off to search your exact words."
           onClick={onToggleQueryUnderstanding}
         >
           <span>
             <small>Search controls</small>
-            <strong>Agentic Search</strong>
+            <strong>Query understanding</strong>
           </span>
           <b>{queryUnderstandingEnabled ? "On" : "Off"}</b>
         </button>
@@ -1342,11 +1281,12 @@ function MobileNav({
 }
 
 function CartDrawer({ items, onClose, onRemove, onProduct, trackEvent }) {
+  const dialogRef = useDialogFocus(onClose);
   const subtotal = items.reduce((total, item) => total + item.price, 0);
 
   return (
     <div className="drawer-backdrop cart-backdrop" onClick={onClose}>
-      <aside className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Shopping bag">
+      <aside ref={dialogRef} role="dialog" aria-modal="true" tabIndex={-1} className="cart-drawer" onClick={(event) => event.stopPropagation()} aria-label="Shopping bag">
         <div className="cart-header">
           <div>
             <p className="eyebrow">Your selection</p>
@@ -1410,53 +1350,51 @@ function CartDrawer({ items, onClose, onRemove, onProduct, trackEvent }) {
 }
 
 function ProductModal({ product, favorite, inCart, addToCart, toggleFavorite, onClose }) {
+  const dialogRef = useDialogFocus(onClose);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <section className="product-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+      <section ref={dialogRef} className="product-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="product-title" tabIndex={-1}>
         <button className="modal-close icon-button" type="button" aria-label="Close product" onClick={onClose}>
           <X size={18} />
         </button>
-        <img src={product.image} alt={`${product.brand} ${product.title}`} />
-        <div className="product-detail">
-          <span className="badge inline">{product.badge}</span>
-          <h2>{product.brand}</h2>
-          <p>{product.title}</p>
-          <div className="detail-price">
-            {product.oldPrice && <del>{formatPrice(product.oldPrice)}</del>}
-            <strong>{formatPrice(product.price)}</strong>
-          </div>
-          <dl>
-            <div>
-              <dt>Condition</dt>
-              <dd>{product.condition}</dd>
+        <div className="product-modal-body">
+          <img src={product.image} alt={`${product.brand} ${product.title}`} />
+          <div className="product-detail">
+            <p className="eyebrow">{product.brand}</p>
+            <h2 id="product-title">{product.title}</h2>
+            <div className="detail-price">
+              {product.oldPrice && <del>{formatPrice(product.oldPrice)}</del>}
+              <strong>{formatPrice(product.price)}</strong>
             </div>
-            <div>
-              <dt>Size</dt>
-              <dd>{product.size}</dd>
-            </div>
-            <div>
-              <dt>Ships from</dt>
-              <dd>{product.country}</dd>
-            </div>
-          </dl>
-          <div className="reason-list">
-            {product.reasons.map((reason) => (
-              <span key={reason}>{reason}</span>
-            ))}
+            <dl>
+              <div>
+                <dt>Condition</dt>
+                <dd>{product.condition}</dd>
+              </div>
+              <div>
+                <dt>Size</dt>
+                <dd>{product.size}</dd>
+              </div>
+              <div>
+                <dt>Ships from</dt>
+                <dd>{product.country}</dd>
+              </div>
+            </dl>
+            <p className="product-material">{product.color} · {product.material}</p>
           </div>
-          <div className="detail-actions">
-            <button
-              className="primary-button"
-              type="button"
-              onClick={() => addToCart(product)}
-            >
-              {inCart ? "View in bag" : "Add to bag"}
-            </button>
-            <button className="secondary-button" type="button" onClick={() => toggleFavorite(product.id, product)}>
-              <Heart size={18} fill={favorite ? "currentColor" : "none"} />
-              {favorite ? "Saved" : "Save"}
-            </button>
-          </div>
+        </div>
+        <div className="detail-actions">
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => addToCart(product)}
+          >
+            {inCart ? "View in bag" : "Add to bag"}
+          </button>
+          <button className="secondary-button" type="button" onClick={() => toggleFavorite(product.id, product)}>
+            <Heart size={18} fill={favorite ? "currentColor" : "none"} />
+            {favorite ? "Saved" : "Save"}
+          </button>
         </div>
       </section>
     </div>

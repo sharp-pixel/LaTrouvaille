@@ -121,3 +121,26 @@ test("the active query remains inspectable beyond the bounded interaction histor
   assert.equal(panel.events.length, 40);
   assert.ok(panel.events.some((event) => event.type === "query" && event.query_id === panel.queryId));
 });
+
+test("retry preserves search mode and controls without recording failed responses", async (t) => {
+  const app = await mountApp(t);
+  await act(async () => app.props("Header").runSearch("gold watch"));
+  const firstRequest = app.requests[0];
+  await act(async () => firstRequest.resolve({
+    ok: false,
+    status: 503,
+    json: async () => ({ error: "Search service unavailable" }),
+  }));
+  assert.equal(app.props("ResultsPage").searchMeta.status, "error");
+  assert.deepEqual(app.props("ResultsPage").products, []);
+  assert.equal(app.records().length, 0);
+  await act(async () => app.props("ResultsPage").onRetry());
+  assert.equal(app.requests.length, 2);
+  assert.deepEqual(app.requests[1].payload, firstRequest.payload);
+  assert.equal(app.requests[1].payload.queryUnderstanding, true);
+  assert.equal(app.props("ResultsPage").searchMeta.status, "loading");
+  await app.answer(app.requests[1], "retry-watch");
+  assert.equal(app.records().length, 1);
+  assert.equal(app.props("ResultsPage").searchMeta.status, "ready");
+  assert.deepEqual(app.records()[0].query_response_object_ids, ["retry-watch"]);
+});

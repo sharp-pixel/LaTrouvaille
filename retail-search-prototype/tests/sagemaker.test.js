@@ -40,7 +40,7 @@ test("SageMaker deployment pins Ministral to one ml.g5.2xlarge text-only worker"
   );
   assert.equal(
     deployment.model.PrimaryContainer.Image,
-    "763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.25.1-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.3-2026-07-22-22-50-11",
+    "763104351884.dkr.ecr.eu-west-1.amazonaws.com/vllm:0.29.0-gpu-py312-cu130-ubuntu24.04-sagemaker",
   );
   assert.deepEqual(
     {

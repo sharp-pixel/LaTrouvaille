@@ -9,7 +9,7 @@ export const DEFAULT_SERVED_MODEL_NAME = "ministral-3-8b-instruct-2512";
 export const DEFAULT_ADAPTER_NAME = "psg-agentic-query-planner-v3";
 export const DEFAULT_ADAPTER_PATH = "/opt/ml/model/qlora-agentic-v3/adapter";
 export const DEFAULT_IMAGE_TAG =
-  "0.25.1-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.3-2026-07-22-22-50-11";
+  "0.29.0-gpu-py312-cu130-ubuntu24.04-sagemaker";
 export const DEFAULT_INFERENCE_AMI = "al2-ami-sagemaker-inference-gpu-3-1";
 const AWS_REGION_PATTERN = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/;
 const DOCKER_TAG_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;

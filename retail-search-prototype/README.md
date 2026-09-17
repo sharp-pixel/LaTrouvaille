@@ -76,7 +76,7 @@ docker compose -f compose.yml up -d
 ```
 
 Compose requires an NVIDIA GPU with working drivers and NVIDIA Container Toolkit.
-The `vllm` service loads the pinned BF16 Ministral checkpoint plus the rank-16
+The `vllm` service uses `vllm/vllm-openai:v0.29.0` and loads the pinned BF16 Ministral checkpoint plus the rank-16
 adapter from `../query-understanding-training/artifacts/qlora-agentic-v3/adapter`
 and serves `psg-agentic-query-planner-v3` on `http://127.0.0.1:8000/v1`.
 Set `VLLM_ADAPTER_PATH` to use another local adapter directory; missing paths fail
@@ -170,7 +170,7 @@ No API key is needed for the usual local LM Studio server. The registered connec
 
 ### Amazon SageMaker
 
-The optional SageMaker path deploys the pinned `mistralai/Ministral-3-8B-Instruct-2512-BF16` revision to one `ml.g5.2xlarge` real-time endpoint in `eu-west-1`. It uses the dated AWS vLLM 0.25.1 SageMaker DLC tag `0.25.1-gpu-py312-cu130-ubuntu22.04-sagemaker-v1.3-2026-07-22-22-50-11`, loads only the language model, caps the model context at 4,096 tokens, limits concurrency to four sequences, and retains JSON-schema structured output. The endpoint is billable whenever it is `InService`.
+The optional SageMaker path deploys the pinned `mistralai/Ministral-3-8B-Instruct-2512-BF16` revision to one `ml.g5.2xlarge` real-time endpoint in `eu-west-1`. It uses the AWS vLLM 0.29.0 SageMaker DLC tag `0.29.0-gpu-py312-cu130-ubuntu24.04-sagemaker`, loads only the language model, caps the model context at 4,096 tokens, limits concurrency to four sequences, and retains JSON-schema structured output. The endpoint is billable whenever it is `InService`.
 
 The deployment command requires the AWS CLI and an existing SageMaker model execution role. The role must trust `sagemaker.amazonaws.com` and allow the SageMaker service to pull the pinned DLC image. Inspect the exact resources without creating anything:
 
@@ -221,7 +221,7 @@ The connector identity needs only `sagemaker:InvokeEndpoint` on:
 arn:aws:sagemaker:eu-west-1:ACCOUNT_ID:endpoint/la-trouvaille-ministral
 ```
 
-For this self-managed local OpenSearch node, the configuration script requires explicit, non-expiring `SAGEMAKER_CONNECTOR_ACCESS_KEY_ID` and `SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY` values and stores them in OpenSearch's encrypted connector credential field. It intentionally does not export the active AWS CLI profile or reuse generic AWS environment credentials, which might belong to a broader principal. Create a dedicated principal whose only permission is the `sagemaker:InvokeEndpoint` resource shown above. Temporary session credentials are rejected by default because their token would expire without refresh. For a bounded local test only, set `SAGEMAKER_CONNECTOR_SESSION_TOKEN` and `SAGEMAKER_CONNECTOR_ALLOW_SESSION_CREDENTIALS=true`; the connector will stop working when the session expires and must not be treated as durable configuration. Connector setup merges its trusted endpoint into the existing OpenSearch allowlist and does not disable private-IP access used by an existing local connector. The SageMaker connector removes the JSON Schema `uniqueItems` annotation because vLLM 0.25.1 does not implement it; the runtime DSL validator still enforces exact field sets, filter values, and clause ordering. For production, prefer Amazon OpenSearch Service with an assumable, least-privilege IAM connector role instead of long-lived access keys.
+For this self-managed local OpenSearch node, the configuration script requires explicit, non-expiring `SAGEMAKER_CONNECTOR_ACCESS_KEY_ID` and `SAGEMAKER_CONNECTOR_SECRET_ACCESS_KEY` values and stores them in OpenSearch's encrypted connector credential field. It intentionally does not export the active AWS CLI profile or reuse generic AWS environment credentials, which might belong to a broader principal. Create a dedicated principal whose only permission is the `sagemaker:InvokeEndpoint` resource shown above. Temporary session credentials are rejected by default because their token would expire without refresh. For a bounded local test only, set `SAGEMAKER_CONNECTOR_SESSION_TOKEN` and `SAGEMAKER_CONNECTOR_ALLOW_SESSION_CREDENTIALS=true`; the connector will stop working when the session expires and must not be treated as durable configuration. Connector setup merges its trusted endpoint into the existing OpenSearch allowlist and does not disable private-IP access used by an existing local connector. The SageMaker connector omits the JSON Schema `uniqueItems` annotation for vLLM compatibility; the runtime DSL validator still enforces exact field sets, filter values, and clause ordering. For production, prefer Amazon OpenSearch Service with an assumable, least-privilege IAM connector role instead of long-lived access keys.
 
 Delete the billable endpoint, endpoint configuration, and SageMaker model resource together:
 
@@ -231,7 +231,7 @@ npm run sagemaker:delete
 
 The deployment defaults can be overridden with `SAGEMAKER_MINISTRAL_ENDPOINT`, `SAGEMAKER_MINISTRAL_INSTANCE_TYPE`, `SAGEMAKER_MINISTRAL_MODEL_ID`, `SAGEMAKER_MINISTRAL_MODEL_REVISION`, `SAGEMAKER_MINISTRAL_MODEL`, and `SAGEMAKER_VLLM_IMAGE_TAG`. Keep the default model revision synchronized with `query-understanding-training/configs/qlora-5090.yaml`. To load a validated SageMaker training artifact, set `SAGEMAKER_MINISTRAL_ADAPTER_MODEL_DATA_URL` to its `model.tar.gz` S3 URI. The deployment mounts the artifact, loads `/opt/ml/model/qlora-agentic-v3/adapter`, and exposes it under `SAGEMAKER_MINISTRAL_ADAPTER_NAME` (default `psg-agentic-query-planner-v3`) while retaining the base-model alias for rollback and comparison.
 
-References: [AWS vLLM SageMaker deployment](https://aws.github.io/deep-learning-containers/vllm/deployment/sagemaker/), [AWS vLLM configuration](https://aws.github.io/deep-learning-containers/vllm/configuration/), and [OpenSearch SageMaker connectors](https://docs.opensearch.org/latest/ml-commons-plugin/remote-models/connectors/).
+References: [AWS supported images](https://aws.github.io/deep-learning-containers/reference/available_images/#vllm-ubuntu), [AWS vLLM SageMaker deployment](https://aws.github.io/deep-learning-containers/vllm/deployment/sagemaker/), [AWS vLLM configuration](https://aws.github.io/deep-learning-containers/vllm/configuration/), and [OpenSearch SageMaker connectors](https://docs.opensearch.org/latest/ml-commons-plugin/remote-models/connectors/).
 
 Dry-run commands:
 

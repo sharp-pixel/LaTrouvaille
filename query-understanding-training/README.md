@@ -48,10 +48,46 @@ Use Linux with a current NVIDIA driver, Python 3.11, and enough disk space for t
 ```bash
 uv sync --locked --no-editable --group train
 uv run --locked --no-editable quft doctor --training
-uv run --locked --no-editable quft train --config configs/qlora-5090.yaml --execute
+BNB_CUDA_VERSION=130 uv run --locked --no-editable quft train --config configs/qlora-5090.yaml --execute
 ```
 
-The training configuration starts with the design baseline: 4-bit NF4 QLoRA, BF16 compute, sequence length 2,048, batch size 1, gradient accumulation 16, LoRA rank 16/alpha 32, cosine scheduling, and two epochs.
+The training configuration uses 4-bit NF4 QLoRA, BF16 compute, a 2,112-token sequence length, batch size 1, gradient accumulation 16, LoRA rank 16/alpha 32, cosine scheduling, and two epochs. The 2,112-token limit is the smallest 16-token-aligned limit that retains every current Ministral training target without truncation.
+
+The locked PyTorch build uses CUDA 13.2, while the locked bitsandbytes release provides its newest CUDA 13.0 binary. On CUDA 13-capable NVIDIA drivers, set `BNB_CUDA_VERSION=130` as shown above so bitsandbytes loads that compatible binary for 4-bit quantization.
+
+## Local SFT evaluation report (2026-09-15)
+
+The local two-epoch QLoRA run completed successfully on an NVIDIA RTX PRO 6000
+Blackwell Workstation Edition (96 GiB VRAM). It trained the pinned Ministral 3
+8B BF16 base model on all 4,640 training rows and evaluated deterministic,
+greedy completions over all 1,160 held-out rows. The final LoRA adapter is
+written to `artifacts/qlora-agentic-v3/adapter`; raw comparison outputs are in
+`artifacts/evaluation/`.
+
+| Metric | Base model, raw response | Base model, JSON extracted for diagnosis | Final SFT adapter |
+| --- | ---: | ---: | ---: |
+| JSON validity | 0.0% | 100.0% | 100.0% |
+| Valid request body | 0.0% | 74.8% | 100.0% |
+| DSL policy validity | 0.0% | 32.9% | 100.0% |
+| Required-filter recall | 0.0% | 73.2% | 100.0% |
+| Exact target-body match | 0.0% | 0.0% | 89.1% |
+| Exact persona-clause match | 0.0% | 22.3% | 89.1% |
+
+The raw base-model score is the deployment-relevant result: all 1,160 base
+responses were wrapped in Markdown fences, which the QueryPlanningTool cannot
+execute. The diagnostic column removes those fences only to separate formatting
+from semantic errors; it is not a serving transformation. Even after that
+non-production extraction, the base model had 292 invalid `track_total_hits`
+values and frequently violated the explicit-sort/ranking contract.
+
+All 127 final-adapter misses on strict body equality preserve the core query
+text, required filters, sort/ranking contract, and persona placement. They only
+choose a policy-permitted `multi_match` operator differently from the synthetic
+target (55 `and` to `or`, and 72 `or` to `and`). The grouped hold-out split has
+no scenario-group, ranking-family, or control-key overlap with training, but it
+is synthetic and template-based. Before production deployment, repeat this
+evaluation with human-reviewed, UBI-derived shopper requests and retrieval
+quality checks against the live catalog.
 
 ## SageMaker training
 
@@ -89,7 +125,7 @@ uv run --locked --no-editable quft doctor --training
 uv run --locked --no-editable quft train --config configs/lora-macos.yaml --execute
 ```
 
-The 8B multimodal checkpoint is memory intensive without 4-bit quantization. The macOS profile uses a 2,048-token sequence length so the native double-encoded mapping prompt and complete JSON target are never truncated; a high-memory Apple Silicon machine is still required for actual training. Validation, dry runs, and the unit suite do not require the training group:
+The 8B multimodal checkpoint is memory intensive without 4-bit quantization. The macOS profile uses a 2,112-token sequence length so the native double-encoded mapping prompt and complete JSON target are never truncated; a high-memory Apple Silicon machine is still required for actual training. Validation, dry runs, and the unit suite do not require the training group:
 
 ```bash
 uv sync --locked --no-editable
@@ -114,6 +150,15 @@ uv run --no-editable quft train
 
 # Score held-out predictions
 uv run --no-editable quft evaluate --predictions predictions/eval.jsonl
+
+# Generate deterministic local predictions, then score their structural quality.
+# On the current locked stack, the bitsandbytes CUDA 13.0 binary is compatible
+# with PyTorch CUDA 13.2 when this override is set.
+BNB_CUDA_VERSION=130 uv run --locked --no-editable quft generate-predictions \
+  --adapter artifacts/qlora-agentic-v3/adapter \
+  --output artifacts/evaluation/sft-final.jsonl
+uv run --locked --no-editable quft evaluate \
+  --predictions artifacts/evaluation/sft-final.jsonl
 ```
 
 Prediction rows use this shape:

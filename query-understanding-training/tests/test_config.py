@@ -30,7 +30,7 @@ def test_config_uses_documented_qlora_baseline(config: TrainingConfig) -> None:
     assert config.quantization.load_in_4bit is True
     assert config.quantization.quant_type == "nf4"
     assert config.quantization.compute_dtype == "bfloat16"
-    assert config.trainer.sequence_length == 2048
+    assert config.trainer.sequence_length == 2112
     assert config.trainer.gradient_accumulation_steps == 16
     assert config.trainer.max_steps == -1
     assert config.lora.rank == 16
@@ -77,7 +77,7 @@ def test_macos_config_uses_native_mps_compatible_lora(project_root: Path) -> Non
     assert config.quantization.load_in_4bit is False
     assert config.quantization.compute_dtype == "float16"
     assert config.trainer.optim == "adamw_torch"
-    assert config.trainer.sequence_length == 2048
+    assert config.trainer.sequence_length == 2112
     assert config.trainer.bf16 is False
     assert config.trainer.fp16 is True
     assert config.trainer.tf32 is False

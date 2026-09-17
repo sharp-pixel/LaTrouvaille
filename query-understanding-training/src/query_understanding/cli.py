@@ -12,6 +12,7 @@ from query_understanding.config import load_training_config
 from query_understanding.corpus import write_corpus
 from query_understanding.dataset import ValidationReport, validate_dataset
 from query_understanding.evaluation import evaluate_predictions
+from query_understanding.inference import generate_predictions
 from query_understanding.policy import load_policy
 from query_understanding.schemas import TrainingExample
 from query_understanding.training import environment_report, require_supported_python, run_training
@@ -138,6 +139,28 @@ def evaluate(
     policy = load_policy(loaded.data.policy_file)
     report = evaluate_predictions(loaded.data.eval_file, predictions, policy)
     typer.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+
+
+@app.command("generate-predictions")
+def generate_predictions_command(
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    adapter: Annotated[Path | None, typer.Option("--adapter", exists=True)] = None,
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)] = DEFAULT_CONFIG,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 8,
+    max_new_tokens: Annotated[int, typer.Option("--max-new-tokens", min=1)] = 1024,
+    limit: Annotated[int | None, typer.Option("--limit", min=1)] = None,
+) -> None:
+    """Generate raw deterministic completions for structural evaluation."""
+    loaded = load_training_config(config)
+    count = generate_predictions(
+        loaded,
+        output,
+        adapter_path=adapter,
+        batch_size=batch_size,
+        max_new_tokens=max_new_tokens,
+        limit=limit,
+    )
+    typer.echo(json.dumps({"output": str(output.resolve()), "predictions": count}, sort_keys=True))
 
 
 def _report_dict(report: ValidationReport) -> dict[str, object]:

@@ -161,6 +161,11 @@ uv run --locked --no-editable quft evaluate \
   --predictions artifacts/evaluation/sft-final.jsonl
 ```
 
+`generate-predictions --config` selects the loader for the configured model
+architecture (including Ministral and Qwen3). It honors `load_in_4bit` and chooses
+CUDA, MPS, or CPU according to availability. Four-bit profiles require CUDA;
+use `--config configs/lora-macos.yaml` for unquantized Apple Silicon inference.
+
 Prediction rows use this shape:
 
 ```json

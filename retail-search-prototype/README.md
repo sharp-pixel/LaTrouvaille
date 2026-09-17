@@ -195,6 +195,10 @@ npm run opensearch:agentic
 npm run search:api
 ```
 
+The adapter alias above requires a deployed LoRA artifact. For a fresh base-only
+endpoint, omit `SAGEMAKER_MINISTRAL_MODEL`: connector provisioning defaults to
+the base alias `ministral-3-8b-instruct-2512`, matching the deployment default.
+
 The connector identity needs only `sagemaker:InvokeEndpoint` on:
 
 ```text

@@ -309,6 +309,7 @@ export function replaceSageMakerEndpoint({
 }) {
   let modelCreated = false;
   let configCreated = false;
+  let previousEndpointDeletionRequested = false;
   let previousEndpointDeleted = false;
   let replacementEndpointCreated = false;
   try {
@@ -338,6 +339,7 @@ export function replaceSageMakerEndpoint({
       "--endpoint-name",
       deployment.endpointName,
     ]);
+    previousEndpointDeletionRequested = true;
     runAws([
       "sagemaker",
       "wait",
@@ -371,22 +373,31 @@ export function replaceSageMakerEndpoint({
     const rollback = (args, label) => {
       try {
         runAws(args);
+        return true;
       } catch (rollbackError) {
         rollbackErrors.push(`${label}: ${errorMessage(rollbackError)}`);
+        return false;
       }
     };
+    if (previousEndpointDeletionRequested && !previousEndpointDeleted) {
+      previousEndpointDeleted = rollback(
+        ["sagemaker", "wait", "endpoint-deleted", "--region", region, "--endpoint-name", deployment.endpointName],
+        "wait for previous endpoint deletion",
+      );
+    }
+    let replacementRemoved = !replacementEndpointCreated;
     if (replacementEndpointCreated) {
-      rollback(
+      const deletionRequested = rollback(
         ["sagemaker", "delete-endpoint", "--region", region, "--endpoint-name", deployment.endpointName],
         "delete failed replacement endpoint",
       );
-      rollback(
+      replacementRemoved = deletionRequested && rollback(
         ["sagemaker", "wait", "endpoint-deleted", "--region", region, "--endpoint-name", deployment.endpointName],
         "wait for failed replacement deletion",
       );
     }
-    if (previousEndpointDeleted) {
-      rollback(
+    if (previousEndpointDeleted && replacementRemoved) {
+      const restored = rollback(
         [
           "sagemaker",
           "create-endpoint",
@@ -399,12 +410,12 @@ export function replaceSageMakerEndpoint({
         ],
         "restore previous endpoint",
       );
-      rollback(
+      if (restored) rollback(
         ["sagemaker", "wait", "endpoint-in-service", "--region", region, "--endpoint-name", deployment.endpointName],
         "wait for previous endpoint restoration",
       );
     }
-    if (configCreated) {
+    if (configCreated && replacementRemoved) {
       rollback(
         [
           "sagemaker",
@@ -417,7 +428,7 @@ export function replaceSageMakerEndpoint({
         "delete replacement endpoint config",
       );
     }
-    if (modelCreated) {
+    if (modelCreated && replacementRemoved) {
       rollback(
         ["sagemaker", "delete-model", "--region", region, "--model-name", deployment.modelName],
         "delete replacement model",

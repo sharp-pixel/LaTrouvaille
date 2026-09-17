@@ -2,6 +2,9 @@ const APPLICATION = "maison-reuse-search-prototype";
 const STORAGE_KEY = "maison-reuse-ubi-events";
 const CLIENT_KEY = "maison-reuse-ubi-client-id";
 const ENDPOINT = import.meta.env?.VITE_UBI_ENDPOINT || "http://127.0.0.1:8787/ubi";
+let memoryClientId = "";
+let memoryRecords = [];
+let storageFailed = false;
 
 function uuid() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -9,18 +12,35 @@ function uuid() {
 }
 
 export function getClientId() {
-  const existing = localStorage.getItem(CLIENT_KEY);
-  if (existing) return existing;
-  const next = `web-${uuid()}`;
-  localStorage.setItem(CLIENT_KEY, next);
-  return next;
+  if (!storageFailed) {
+    try {
+      const existing = localStorage.getItem(CLIENT_KEY);
+      if (existing) memoryClientId = existing;
+      if (!memoryClientId) memoryClientId = `web-${uuid()}`;
+      if (!existing) localStorage.setItem(CLIENT_KEY, memoryClientId);
+    } catch {
+      storageFailed = true;
+    }
+  }
+  if (!memoryClientId) memoryClientId = `web-${uuid()}`;
+  return memoryClientId;
 }
 
 function appendLocal(record) {
-  const existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
-  const next = [record, ...existing].slice(0, 40);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  return next;
+  const records = [record, ...getRecentUbiEvents()];
+  const latestQuery = records.find((item) => item.type === "query");
+  memoryRecords = records.slice(0, 40);
+  // Keep the current query inspectable even during a long interaction session.
+  if (latestQuery && !memoryRecords.includes(latestQuery)) memoryRecords[39] = latestQuery;
+  if (!storageFailed) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryRecords));
+    } catch {
+      // Retain new records in memory even if persisted storage is full or denied.
+      storageFailed = true;
+    }
+  }
+  return memoryRecords;
 }
 
 async function post(path, record) {
@@ -37,7 +57,17 @@ async function post(path, record) {
 }
 
 export function getRecentUbiEvents() {
-  return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+  if (!storageFailed) {
+    try {
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      if (Array.isArray(stored)) {
+        memoryRecords = stored.filter((record) => record && typeof record === "object" && !Array.isArray(record)).slice(0, 40);
+      }
+    } catch {
+      storageFailed = true;
+    }
+  }
+  return memoryRecords;
 }
 
 function personaAttributes(persona) {
@@ -57,9 +87,14 @@ export function compactQueryPlan(queryPlan, rewrittenQuery) {
     personalizedRewrite: _personalizedRewrite,
     personalization,
     rewritten,
+    dslQuery,
     ...compact
   } = queryPlan;
   const canonicalRewrite = baseRewrite || rewritten;
+
+  // Use a new field so indexes with a legacy object-valued dslQuery mapping
+  // also accept future records. The UI can still inspect historical records.
+  if (dslQuery != null) compact.dsl_query_json = typeof dslQuery === "string" ? dslQuery : JSON.stringify(dslQuery);
 
   if (canonicalRewrite && canonicalRewrite !== rewrittenQuery) compact.rewritten = canonicalRewrite;
   if (personalization && typeof personalization === "object" && !Array.isArray(personalization)) {

@@ -77,7 +77,6 @@ const getInitialPersona = () => {
 };
 
 export function App() {
-  const lastQuerySignature = useRef("");
   const personaReturnFocusRef = useRef(null);
   const mobileMenuButtonRef = useRef(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -100,7 +99,7 @@ export function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
   const [ubiQueryId, setUbiQueryId] = useState("");
-  const [ubiEvents, setUbiEvents] = useState(() => getRecentUbiEvents().slice(0, 6));
+  const [ubiEvents, setUbiEvents] = useState(getRecentUbiEvents);
   const [searchResponse, setSearchResponse] = useState({
     products: null,
     personaId: null,
@@ -147,28 +146,34 @@ export function App() {
     }),
     [filters.category, localPlan, queryUnderstandingEnabled, searchPersona],
   );
+  const requestKey = JSON.stringify({
+    activeQuery, filters, maxPrice, sort, personaId: activePersona.id,
+    queryUnderstanding: queryUnderstandingEnabled, pipeline: selectedPipeline,
+  });
   const activePlan = useMemo(() => {
-    const returnedPlan = searchResponse.personaId === searchPersona.id ? searchResponse.queryPlan : null;
+    const returnedPlan = searchResponse.requestKey === requestKey ? searchResponse.queryPlan : null;
     if (!returnedPlan) return localPersonalizationPlan;
     return {
       ...localPlan,
       ...returnedPlan,
       rewritten: returnedPlan.personalizedRewrite || returnedPlan.rewritten || localPlan.rewritten,
     };
-  }, [localPersonalizationPlan, localPlan, searchPersona.id, searchResponse.personaId, searchResponse.queryPlan]);
+  }, [localPersonalizationPlan, localPlan, requestKey, searchResponse.requestKey, searchResponse.queryPlan]);
   const suggestions = useMemo(() => {
     const seed = query.trim().toLowerCase();
     if (!seed) return popularSearches.slice(0, 6);
     return popularSearches.filter((item) => item.includes(seed)).slice(0, 6);
   }, [query]);
 
-  const sortedProducts = searchResponse.products ?? [];
+  const sortedProducts = searchResponse.requestKey === requestKey ? searchResponse.products ?? [] : [];
 
   useEffect(() => {
     if (mode !== "results") return undefined;
     const controller = new AbortController();
     const startedAt = performance.now();
+    setUbiQueryId("");
     setSearchResponse({
+      requestKey,
       products: [],
       personaId: searchPersona.id,
       queryPlan: localPersonalizationPlan,
@@ -213,14 +218,29 @@ export function App() {
         if (payload.source !== "opensearch") {
           throw new Error(`Search API returned unsupported source: ${payload.source || "unknown"}`);
         }
+        const tookMs = payload.tookMs ?? Math.round(performance.now() - startedAt);
+        // Capture the request and response together. A separate effect can pair
+        // new controls with the previous ready response before loading renders.
+        const queryRecord = recordUbiQuery({
+          userQuery: activeQuery,
+          rewrittenQuery: payload.queryPlan?.personalizedRewrite || payload.queryPlan?.rewritten || localPlan.rewritten,
+          queryPlan: { ...(payload.queryPlan || localPlan), source: "opensearch", took_ms: tookMs },
+          results: (payload.products || []).slice(0, 24),
+          filters,
+          sort,
+          persona: activePersona,
+        });
+        setUbiQueryId(queryRecord.query_id);
+        setUbiEvents(getRecentUbiEvents());
         setSearchResponse({
+          requestKey,
           products: payload.products || [],
           personaId: searchPersona.id,
           queryPlan: payload.queryPlan || null,
           source: "opensearch",
           status: "ready",
           error: null,
-          tookMs: payload.tookMs ?? Math.round(performance.now() - startedAt),
+          tookMs,
           total: payload.total ?? payload.products?.length ?? 0,
           totalRelation: payload.totalRelation || "eq",
           enhancements: payload.enhancements || { querqy: "not_called", rules: [] },
@@ -229,6 +249,7 @@ export function App() {
       .catch((error) => {
         if (controller.signal.aborted) return;
         setSearchResponse({
+          requestKey,
           products: [],
           personaId: searchPersona.id,
           queryPlan: null,
@@ -243,45 +264,12 @@ export function App() {
       });
 
     return () => controller.abort();
-  }, [activePersona.id, activeQuery, filters, localPersonalizationPlan, maxPrice, mode, queryUnderstandingEnabled, selectedPipeline, searchPersona.id, sort]);
-
-  useEffect(() => {
-    if (mode !== "results") return;
-    if (searchResponse.status !== "ready") return;
-    if (searchResponse.personaId !== searchPersona.id) return;
-    const signature = JSON.stringify({
-      activeQuery,
-      filters,
-      maxPrice,
-      sort,
-      personaId: searchPersona.id,
-      queryUnderstanding: queryUnderstandingEnabled,
-    });
-    if (lastQuerySignature.current === signature) return;
-    lastQuerySignature.current = signature;
-
-    const queryRecord = recordUbiQuery({
-      userQuery: activeQuery,
-      rewrittenQuery:
-        searchResponse.queryPlan?.personalizedRewrite || searchResponse.queryPlan?.rewritten || localPlan.rewritten,
-      queryPlan: {
-        ...(searchResponse.queryPlan || localPlan),
-        source: searchResponse.source,
-        took_ms: searchResponse.tookMs,
-      },
-      results: sortedProducts.slice(0, 24),
-      filters,
-      sort,
-      persona: activePersona,
-    });
-    setUbiQueryId(queryRecord.query_id);
-    setUbiEvents(getRecentUbiEvents().slice(0, 6));
-  }, [activePersona, activeQuery, filters, localPlan, maxPrice, mode, queryUnderstandingEnabled, searchPersona.id, searchResponse.personaId, searchResponse.queryPlan, searchResponse.source, searchResponse.status, searchResponse.tookMs, sort, sortedProducts]);
+  }, [activePersona, activeQuery, filters, localPersonalizationPlan, localPlan, maxPrice, mode, queryUnderstandingEnabled, requestKey, selectedPipeline, searchPersona.id, sort]);
 
   const trackEvent = (payload) => {
-    if (!ubiQueryId) return;
+    if (!ubiQueryId || mode !== "results" || searchResponse.status !== "ready" || searchResponse.requestKey !== requestKey) return;
     recordUbiEvent({ queryId: ubiQueryId, persona: activePersona, ...payload });
-    setUbiEvents(getRecentUbiEvents().slice(0, 6));
+    setUbiEvents(getRecentUbiEvents());
   };
 
   const openPersonaSelector = (returnFocusTarget) => {
@@ -417,7 +405,7 @@ export function App() {
           persona_selection: { from: previousPersona.id, to: nextPersona.id },
         },
       });
-      setUbiEvents(getRecentUbiEvents().slice(0, 6));
+      setUbiEvents(getRecentUbiEvents());
     }
   };
 
@@ -1015,6 +1003,7 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
         {recent.map((event) => {
           const isQuery = event.type === "query";
           const dslQuery =
+            event.query_attributes?.query_plan?.dsl_query_json ??
             event.query_attributes?.query_plan?.dslQuery ??
             event.query_attributes?.query_plan?.agentic?.dslQuery;
           const tooltipId = isQuery ? `ubi-dsl-${event.query_id}` : undefined;

@@ -22,6 +22,9 @@
     "ubi:collector": "node scripts/ubi-collector.mjs",
     "test": "node --test tests/*.test.js"
   },
+  "devDependencies": {
+    "react-test-renderer": "19.2.0"
+  },
   "dependencies": {
     "@opensearch-project/opensearch": "^3.6.0",
     "@vitejs/plugin-react": "5.0.4",

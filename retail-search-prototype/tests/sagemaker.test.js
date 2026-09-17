@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   buildAgenticModelConnector,
   buildTrustedConnectorClusterSettings,
@@ -503,4 +504,69 @@ test("provider validation and dry-run redaction fail closed", () => {
     }).credential,
     { access_key: "<redacted>", secret_key: "<redacted>" },
   );
+});
+
+test("maintenance rollback waits again and restores after an initial deletion-wait failure", () => {
+  const deployment = buildSageMakerDeployment({
+    region: "eu-west-1", executionRoleArn: "test-role", timestamp: 1720000000000,
+  });
+  const calls = [];
+  let deletionWaits = 0;
+  assert.throws(() => replaceSageMakerEndpoint({
+    region: "eu-west-1", deployment, previousEndpointConfigName: "previous-config",
+    runAws(args) {
+      calls.push(args);
+      if (args[1] === "wait" && args[2] === "endpoint-deleted" && deletionWaits++ === 0) {
+        throw new Error("temporary waiter failure");
+      }
+    },
+  }), /temporary waiter failure.*previous endpoint configuration was restored/);
+  assert.equal(deletionWaits, 2);
+  assert.ok(calls.some((args) => args[1] === "create-endpoint" && args.includes("previous-config")));
+});
+
+test("maintenance rollback reports unresolved deletion without pretending the endpoint is unchanged", () => {
+  const deployment = buildSageMakerDeployment({
+    region: "eu-west-1", executionRoleArn: "test-role", timestamp: 1720000000000,
+  });
+  const calls = [];
+  assert.throws(() => replaceSageMakerEndpoint({
+    region: "eu-west-1", deployment, previousEndpointConfigName: "previous-config",
+    runAws(args) {
+      calls.push(args);
+      if (args[1] === "wait" && args[2] === "endpoint-deleted") throw new Error("waiter failed");
+    },
+  }), /Rollback errors:.*wait for previous endpoint deletion/);
+  assert.equal(calls.some((args) => args[1] === "create-endpoint"), false);
+});
+
+test("actual SageMaker provisioning defaults to the alias served by a fresh deployment", () => {
+  const env = { ...process.env, AGENTIC_MODEL_PROVIDER: "sagemaker" };
+  for (const key of ["SAGEMAKER_MINISTRAL_MODEL", "AGENTIC_BASE_MODEL", "MISTRAL_MODEL", "OPENSEARCH_AGENTIC_MODEL_ID"]) {
+    delete env[key];
+  }
+  const preview = JSON.parse(execFileSync(process.execPath, [
+    new URL("../scripts/configure-agentic-search.mjs", import.meta.url).pathname, "--dry-run",
+  ], { env, encoding: "utf8" }));
+  const deployment = buildSageMakerDeployment({ region: "eu-west-1", executionRoleArn: "test-role" });
+  assert.equal(preview.selectedModel.model, deployment.model.PrimaryContainer.Environment.SM_VLLM_SERVED_MODEL_NAME);
+  assert.equal(preview.selectedModel.source, "base");
+});
+
+test("rollback retains replacement resources while its endpoint deletion is unconfirmed", () => {
+  const deployment = buildSageMakerDeployment({ region: "eu-west-1", executionRoleArn: "test-role" });
+  const calls = [];
+  let deletionWaits = 0;
+  assert.throws(() => replaceSageMakerEndpoint({
+    region: "eu-west-1", deployment, previousEndpointConfigName: "previous-config",
+    runAws(args) {
+      calls.push(args);
+      if (args[1] === "wait" && args[2] === "endpoint-in-service") throw new Error("replacement failed");
+      if (args[1] === "wait" && args[2] === "endpoint-deleted" && deletionWaits++ > 0) {
+        throw new Error("deletion unresolved");
+      }
+    },
+  }), /Rollback errors:.*deletion unresolved/);
+  assert.equal(calls.some((args) => args[1] === "create-endpoint" && args.includes("previous-config")), false);
+  assert.equal(calls.some((args) => ["delete-model", "delete-endpoint-config"].includes(args[1])), false);
 });

@@ -33,7 +33,18 @@ def generate_predictions(
 
     import torch
     from peft import PeftModel
-    from transformers import AutoModelForImageTextToText, AutoTokenizer, BitsAndBytesConfig
+    from transformers import (
+        AutoConfig,
+        AutoModelForCausalLM,
+        AutoModelForImageTextToText,
+        AutoTokenizer,
+        BitsAndBytesConfig,
+    )
+
+    mps = getattr(torch.backends, "mps", None)
+    device = "cuda" if torch.cuda.is_available() else "mps" if mps and mps.is_available() else "cpu"
+    if config.quantization.load_in_4bit and device != "cuda":
+        raise RuntimeError("4-bit bitsandbytes quantization requires CUDA; use an unquantized profile on MPS or CPU")
 
     policy = load_policy(config.data.policy_file)
     examples = read_examples(config.data.eval_file, policy)
@@ -51,18 +62,34 @@ def generate_predictions(
         raise RuntimeError("model tokenizer does not define an EOS token")
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
-    model = AutoModelForImageTextToText.from_pretrained(
+    model_config = AutoConfig.from_pretrained(
         config.model.name_or_path,
         revision=config.model.revision,
-        dtype=getattr(torch, config.quantization.compute_dtype),
         trust_remote_code=config.model.trust_remote_code,
-        device_map={"": 0},
-        quantization_config=BitsAndBytesConfig(
+    )
+    model_loader = (
+        AutoModelForImageTextToText
+        if type(model_config) in AutoModelForImageTextToText._model_mapping
+        else AutoModelForCausalLM
+    )
+    quantization_config = (
+        BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type=config.quantization.quant_type,
             bnb_4bit_use_double_quant=config.quantization.use_double_quant,
             bnb_4bit_compute_dtype=getattr(torch, config.quantization.compute_dtype),
-        ),
+        )
+        if config.quantization.load_in_4bit
+        else None
+    )
+    model = model_loader.from_pretrained(
+        config.model.name_or_path,
+        config=model_config,
+        revision=config.model.revision,
+        dtype=getattr(torch, config.quantization.compute_dtype),
+        trust_remote_code=config.model.trust_remote_code,
+        device_map={"": 0 if device == "cuda" else device},
+        quantization_config=quantization_config,
     )
     if adapter_path is not None:
         model = PeftModel.from_pretrained(model, str(adapter_path.resolve()))

@@ -622,7 +622,7 @@ function Header({
             onClick={(event) => onOpenPersona(event.currentTarget)}
           >
             <img className="persona-trigger-avatar" src={persona.image} alt="" />
-            <span>{persona.id === "anonymous" ? "Demo persona" : persona.shortName}</span>
+            <span>{persona.shortName}</span>
             <ChevronDown size={14} />
           </button>
           <button className="bag-button" type="button" aria-label={`Open bag, ${cartCount} items`} onClick={onOpenCart}>

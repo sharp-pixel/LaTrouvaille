@@ -194,6 +194,47 @@ test("SageMaker request schemas omit vLLM-unsupported uniqueItems without mutati
   );
 });
 
+test("local vLLM connectors keep structured output with a compatible schema and Docker access", () => {
+  const requestBody = {
+    model: "${parameters.model}",
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        strict: true,
+        schema: {
+          type: "array",
+          items: { type: "string", enum: ["title", "brand"] },
+          uniqueItems: true,
+          minItems: 2,
+          maxItems: 2,
+        },
+      },
+    },
+  };
+  const connector = buildAgenticModelConnector({
+    provider: "vllm",
+    selectedModel: { model: "psg-agentic-query-planner-v3" },
+    requestBody,
+    connectorBaseUrl: "http://vllm:8000/v1",
+    modelApiKey: "local",
+  });
+  assert.equal(connector.protocol, "http");
+  assert.equal(connector.parameters.model, "psg-agentic-query-planner-v3");
+  assert.equal(connector.actions[0].url, "http://vllm:8000/v1/chat/completions");
+  const prepared = JSON.parse(connector.actions[0].request_body);
+  assert.equal(prepared.response_format.type, "json_schema");
+  assert.equal(prepared.response_format.json_schema.strict, true);
+  const { uniqueItems, ...compatibleSchema } = requestBody.response_format.json_schema.schema;
+  assert.deepEqual(prepared.response_format.json_schema.schema, compatibleSchema);
+  assert.equal(requestBody.response_format.json_schema.schema.uniqueItems, true);
+  const settings = buildTrustedConnectorClusterSettings({
+    provider: "vllm",
+    connectorOrigin: "http://vllm:8000",
+  });
+  assert.equal(settings["plugins.ml_commons.connector.private_ip_enabled"], true);
+  assert.deepEqual(settings["plugins.ml_commons.trusted_connector_endpoints_regex"], ["^http://vllm:8000/.*$"]);
+});
+
 test("persisted SageMaker connectors require explicitly dedicated non-expiring credentials", () => {
   assert.deepEqual(
     loadPersistentSageMakerConnectorCredentials({

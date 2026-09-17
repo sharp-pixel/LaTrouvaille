@@ -1,5 +1,7 @@
 # Prototype Instructions
 
+Docker Compose serves the pinned BF16 Ministral checkpoint with the local `qlora-agentic-v3/adapter` through vLLM as `psg-agentic-query-planner-v3`. Keep the adapter and shared prompts mounted read-only, wait for the fine-tuned alias before automatic Agentic Search provisioning, and use the Compose `vllm` hostname for discovery and inference. The `vllm` provider retains structured output while omitting unsupported `uniqueItems`; runtime validation still enforces exact field sets.
+
 Run the local server yourself and open the preview in the in-app browser. Do not give the user server-start instructions when you can run it.
 
 Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
@@ -36,4 +38,4 @@ The planner owns the full generated body except service-owned `_source`. Keep it
 
 Keep the composed native `query_text` at or below OpenSearch's 1,000-character limit. The local OpenAI-compatible connector enables JSON-schema output by default; set `AGENTIC_STRUCTURED_OUTPUT=false` only for a provider that does not implement OpenAI `response_format: json_schema`.
 
-OpenSearch 3.7's native planner prompt passes a `_doc`-wrapped mapping source and serializes the mapping and query-field array as JSON string literals. Keep training fixtures and the offline prompt renderer faithful to that captured representation when changing mappings or OpenSearch versions.
+OpenSearch 3.8's native planner prompt passes a `_doc`-wrapped mapping source and serializes the mapping and query-field array as JSON string literals. Keep training fixtures and the offline prompt renderer faithful to that captured representation when changing mappings or OpenSearch versions.

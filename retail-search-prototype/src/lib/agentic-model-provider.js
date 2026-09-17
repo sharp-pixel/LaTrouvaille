@@ -5,8 +5,8 @@ const PRIVATE_CONNECTOR_SETTING = "plugins.ml_commons.connector.private_ip_enabl
 
 export function normalizeAgenticModelProvider(value = "openai") {
   const provider = String(value).trim().toLowerCase();
-  if (!["openai", "sagemaker"].includes(provider)) {
-    throw new Error(`Unsupported AGENTIC_MODEL_PROVIDER "${value}"; expected openai or sagemaker`);
+  if (!["openai", "vllm", "sagemaker"].includes(provider)) {
+    throw new Error(`Unsupported AGENTIC_MODEL_PROVIDER "${value}"; expected openai, vllm or sagemaker`);
   }
   return provider;
 }
@@ -67,7 +67,7 @@ function omitUnsupportedVllmSchemaKeywords(value) {
 export function prepareAgenticRequestBody({ provider, requestBody }) {
   const normalizedProvider = normalizeAgenticModelProvider(provider);
   const schema = requestBody?.response_format?.json_schema?.schema;
-  if (normalizedProvider !== "sagemaker" || !schema) return requestBody;
+  if (normalizedProvider === "openai" || !schema) return requestBody;
   return {
     ...requestBody,
     response_format: {
@@ -107,7 +107,7 @@ export function buildTrustedConnectorClusterSettings({
     ]),
   ];
   const settings = { [TRUSTED_CONNECTOR_SETTING]: trustedEndpoints };
-  if (normalizedProvider === "openai" && new URL(origin).protocol === "http:") {
+  if (normalizedProvider !== "sagemaker" && new URL(origin).protocol === "http:") {
     settings[PRIVATE_CONNECTOR_SETTING] = true;
   }
   return settings;
@@ -215,7 +215,9 @@ export function buildAgenticModelConnector({
           Authorization: "Bearer ${credential.api_key}",
           "content-type": "application/json",
         },
-        request_body: JSON.stringify(requestBody),
+        request_body: JSON.stringify(
+          prepareAgenticRequestBody({ provider: normalizedProvider, requestBody }),
+        ),
       },
     ],
   };

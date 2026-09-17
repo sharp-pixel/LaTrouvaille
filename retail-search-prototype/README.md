@@ -69,11 +69,27 @@ UBI_FORWARD_OPENSEARCH=1 npm run ubi:collector
 
 ## Local OpenSearch
 
-Build and start the app, OpenSearch, and Dashboards:
+Build and start the app, OpenSearch, Dashboards, and the fine-tuned vLLM model:
 
 ```bash
 docker compose -f compose.yml up -d
 ```
+
+Compose requires an NVIDIA GPU with working drivers and NVIDIA Container Toolkit.
+The `vllm` service loads the pinned BF16 Ministral checkpoint plus the rank-16
+adapter from `../query-understanding-training/artifacts/qlora-agentic-v3/adapter`
+and serves `psg-agentic-query-planner-v3` on `http://127.0.0.1:8000/v1`.
+Set `VLLM_ADAPTER_PATH` to use another local adapter directory; missing paths fail
+startup. Model downloads use the persistent `huggingface-cache` volume and optional
+`HF_TOKEN`. The first start includes downloading the base model and initializing vLLM.
+
+The `agentic-setup` service waits for OpenSearch and the fine-tuned model alias,
+then registers the pipeline using `http://vllm:8000/v1` inside the Compose network.
+The API starts after registration succeeds. Shared planner prompts are mounted
+read-only from the sibling training project. The `vllm` provider keeps JSON-schema
+output enabled and omits unsupported `uniqueItems`, as the SageMaker path does;
+runtime validation still enforces exact field sets. After changing prompts or
+connector settings, rerun `docker compose run --rm agentic-setup`.
 
 The containerized app is available at `http://127.0.0.1:5173/`. Its browser-facing
 search and telemetry endpoints default to the locally published services and can
@@ -110,7 +126,7 @@ npm run opensearch:agentic
 npm run search:api
 ```
 
-Run `npm run opensearch:agentic` after the model server is available. It registers the selected remote model, a native flow agent with `QueryPlanningTool`, and the `secondhand-agentic-search` search pipeline. The model endpoint used by OpenSearch must be reachable from the OpenSearch container; on macOS Docker, the default is `http://host.docker.internal:8000/v1`.
+For host-managed serving, run `npm run opensearch:agentic` after the model server is available (Compose provisions this automatically). It registers the selected remote model, a native flow agent with `QueryPlanningTool`, and the `secondhand-agentic-search` search pipeline. The model endpoint used by OpenSearch must be reachable from the OpenSearch container; on macOS Docker, the default is `http://host.docker.internal:8000/v1`.
 
 Useful overrides:
 
@@ -124,7 +140,7 @@ OPENSEARCH_AGENTIC_SEARCH_MODE=active # active or off
 OPENSEARCH_AGENTIC_SEARCH_PIPELINE=secondhand-agentic-search
 OPENSEARCH_AGENTIC_SEARCH_TIMEOUT_MS=30000
 OPENSEARCH_AGENTIC_MODEL_ID=          # optional pre-registered OpenSearch model ID
-AGENTIC_MODEL_PROVIDER=openai         # openai or sagemaker
+AGENTIC_MODEL_PROVIDER=openai         # openai, vllm or sagemaker
 AGENTIC_MODEL_DISCOVERY_BASE_URL=http://127.0.0.1:8000/v1
 AGENTIC_MODEL_BASE_URL=http://host.docker.internal:8000/v1
 AGENTIC_MODEL_API_KEY=local           # use a real key for authenticated endpoints

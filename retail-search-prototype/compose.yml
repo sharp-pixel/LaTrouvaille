@@ -26,11 +26,97 @@ services:
     ports:
       - "8790:8790"
     depends_on:
-      - opensearch
+      agentic-setup:
+        condition: service_completed_successfully
     restart: unless-stopped
 
+  vllm:
+    image: vllm/vllm-openai:v0.25.1
+    container_name: la-trouvaille-vllm
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    command:
+      - --model
+      - mistralai/Ministral-3-8B-Instruct-2512-BF16
+      - --revision
+      - 06cc81bfd6e45321d8fc8f816576c5b6ac67ec22
+      - --served-model-name
+      - ministral-3-8b-instruct-2512
+      - --dtype
+      - bfloat16
+      - --language-model-only
+      - --max-model-len
+      - "4096"
+      - --max-num-seqs
+      - "4"
+      - --max-num-batched-tokens
+      - "4096"
+      - --enable-lora
+      - --max-lora-rank
+      - "16"
+      - --lora-modules
+      - psg-agentic-query-planner-v3=/adapters/query-planner
+    ports:
+      - "127.0.0.1:8000:8000"
+    shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+      - type: bind
+        source: ${VLLM_ADAPTER_PATH:-../query-understanding-training/artifacts/qlora-agentic-v3/adapter}
+        target: /adapters/query-planner
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import json, urllib.request; data = json.load(urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=5)); assert any(model['id'] == 'psg-agentic-query-planner-v3' for model in data['data'])"
+      interval: 10s
+      timeout: 6s
+      start_period: 15m
+      retries: 6
+    restart: unless-stopped
+
+  agentic-setup:
+    build:
+      context: .
+      target: api
+    command: ["node", "scripts/configure-agentic-search.mjs"]
+    environment:
+      OPENSEARCH_URL: http://opensearch:9200
+      AGENTIC_MODEL_PROVIDER: vllm
+      AGENTIC_MODEL_DISCOVERY_BASE_URL: http://vllm:8000/v1
+      AGENTIC_MODEL_BASE_URL: http://vllm:8000/v1
+      AGENTIC_FINE_TUNED_MODEL: psg-agentic-query-planner-v3
+      AGENTIC_BASE_MODEL: ministral-3-8b-instruct-2512
+      AGENTIC_STRUCTURED_OUTPUT: "true"
+    volumes:
+      - type: bind
+        source: ../query-understanding-training/src/query_understanding/prompts
+        target: /query-understanding-training/src/query_understanding/prompts
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: "no"
+
   opensearch:
-    image: opensearchproject/opensearch:3.7.0
+    image: opensearchproject/opensearch:3.8.0
     container_name: la-trouvaille-opensearch
     environment:
       - discovery.type=single-node
@@ -53,9 +139,15 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' | grep -q '\"timed_out\":false'"]
+      interval: 10s
+      timeout: 6s
+      start_period: 30s
+      retries: 12
 
   dashboards:
-    image: opensearchproject/opensearch-dashboards:3.7.0
+    image: opensearchproject/opensearch-dashboards:3.8.0
     container_name: la-trouvaille-opensearch-dashboards
     environment:
       - OPENSEARCH_HOSTS=["http://opensearch:9200"]
@@ -67,3 +159,4 @@ services:
 
 volumes:
   opensearch-data:
+  huggingface-cache:

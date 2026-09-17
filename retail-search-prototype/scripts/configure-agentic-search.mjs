@@ -384,7 +384,7 @@ async function main() {
           provider,
           selectedModel,
           providedModelId: providedModelId || null,
-          connectorBaseUrl: provider === "openai" ? connectorBaseUrl : null,
+          connectorBaseUrl: provider !== "sagemaker" ? connectorBaseUrl : null,
           sagemaker:
             provider === "sagemaker"
               ? { region: sagemakerRegion, endpointName: sagemakerEndpoint }

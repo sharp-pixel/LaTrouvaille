@@ -144,3 +144,11 @@ test("retry preserves search mode and controls without recording failed response
   assert.equal(app.props("ResultsPage").searchMeta.status, "ready");
   assert.deepEqual(app.records()[0].query_response_object_ids, ["retry-watch"]);
 });
+
+test("Anonymous leaves natural-language budgets to the backend", async (t) => {
+  const app = await mountApp(t);
+  await act(async () => app.props("Header").runSearch("bags preferably under 500"));
+  assert.equal(app.requests[0].payload.personaId, "anonymous");
+  assert.equal(app.requests[0].payload.query, "bags preferably under 500");
+  assert.equal(app.requests[0].payload.maxPrice, 20000);
+});

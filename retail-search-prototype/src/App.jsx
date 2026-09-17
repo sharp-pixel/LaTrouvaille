@@ -135,10 +135,10 @@ export function App() {
   }, []);
 
   const localPlan = useMemo(
-    () => queryUnderstandingEnabled
+    () => queryUnderstandingEnabled && activePersona.id !== "anonymous"
       ? createQueryUnderstanding(activeQuery, products)
       : createLiteralQueryPlan(activeQuery),
-    [activeQuery, queryUnderstandingEnabled],
+    [activeQuery, queryUnderstandingEnabled, activePersona.id],
   );
   const searchPersona = getEffectiveSearchPersona(activePersona.id, queryUnderstandingEnabled);
   const localPersonalizationPlan = useMemo(
@@ -370,7 +370,7 @@ export function App() {
 
   const runSearch = (value = query) => {
     const normalized = value.trim() || "designer resale";
-    const nextPlan = queryUnderstandingEnabled
+    const nextPlan = queryUnderstandingEnabled && activePersona.id !== "anonymous"
       ? createQueryUnderstanding(normalized, products)
       : createLiteralQueryPlan(normalized);
     setActiveQuery(normalized);
@@ -598,7 +598,7 @@ function Header({
             <span>Query understanding</span>
             <i aria-hidden="true">{queryUnderstandingEnabled ? "On" : "Off"}</i>
           </button>
-          {queryUnderstandingEnabled && agenticModels && agenticModels.length > 0 && (
+          {queryUnderstandingEnabled && persona.id !== "anonymous" && agenticModels && agenticModels.length > 0 && (
             <label className="agentic-model-picker">
               <span className="agentic-model-picker-label">Model</span>
               <select

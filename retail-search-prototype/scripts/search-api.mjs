@@ -1,5 +1,6 @@
 import { Client } from "@opensearch-project/opensearch";
 import http from "node:http";
+import { compileAnonymousQuery } from "./rules-query-understanding.mjs";
 import { products } from "../src/data/catalog.js";
 import { getEffectiveSearchPersona, getPersonaSearchContext } from "../src/data/personas.js";
 import {
@@ -352,9 +353,12 @@ async function search(payload) {
   // persona fields and resolve the authoritative profile on the server.
   const personaId = typeof payload.personaId === "string" ? payload.personaId.slice(0, 64) : "anonymous";
   const persona = getEffectiveSearchPersona(personaId, queryUnderstandingEnabled);
-  const understanding = queryUnderstandingEnabled
+  const anonymousRules = queryUnderstandingEnabled && persona.id === "anonymous"
+    ? compileAnonymousQuery({ query, filters, maxPrice, sort, size, trackTotalHits })
+    : null;
+  const understanding = anonymousRules?.queryPlan || (queryUnderstandingEnabled
     ? createQueryUnderstanding(query, products)
-    : createLiteralQueryPlan(query);
+    : createLiteralQueryPlan(query));
   const personaCategories = [
     ...understanding.categories,
     ...(Array.isArray(filters.category) ? filters.category : []),
@@ -410,6 +414,29 @@ async function search(payload) {
     "canonical_text",
     "quality_score",
   ];
+  if (anonymousRules) {
+    const body = { ...anonymousRules.dslQuery, _source: sourceFields };
+    try {
+      // Explicit pipeline=_none also bypasses any index default search pipeline.
+      const result = unwrap(await client.search({ index, search_pipeline: "_none", body }));
+      return {
+        index,
+        source: "opensearch",
+        tookMs: Date.now() - startedAt,
+        opensearchTookMs: result.took,
+        total: typeof result.hits.total === "number" ? result.hits.total : result.hits.total?.value,
+        totalRelation: typeof result.hits.total === "number" ? "eq" : result.hits.total?.relation,
+        queryPlan: { ...anonymousRules.queryPlan, dslQuery: body },
+        enhancements: {
+          queryUnderstanding: "enabled", engine: "rules", agentic: "not_called",
+          querqy: "not_called", rules: anonymousRules.queryPlan.constraints, dslQuery: body,
+        },
+        products: result.hits.hits.map(toProduct),
+      };
+    } catch (error) {
+      throw serviceUnavailable(`OpenSearch search failed: ${error.message}`, error);
+    }
+  }
   if (queryUnderstandingEnabled && query.trim() && agenticEligible) {
     if (agenticMode !== "active") {
       throw serviceUnavailable(
@@ -606,7 +633,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`Search API listening on http://${host}:${port}`);
+  console.log(`Search API listening on http://${host}:${server.address().port}`);
   console.log(`OpenSearch index: ${index}`);
   console.log(`Native Agentic Search: ${agenticMode} (${agenticPipeline})`);
 });

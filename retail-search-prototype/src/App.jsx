@@ -924,10 +924,14 @@ function ResultsPage({
 }
 
 function UbiTelemetryPanel({ queryId, events, searchMeta }) {
+  const [expandedQueryId, setExpandedQueryId] = useState(null);
+  const expanded = Boolean(queryId) && expandedQueryId === queryId;
   const queryRecord = events.find((event) => event.type === "query" && event.query_id === queryId);
-  const recentInteractions = events
+  const interactions = events
     .filter((event) => event.type === "event" && event.query_id === queryId)
-    .slice(0, 3);
+    .reverse()
+    .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
+  const recentInteractions = expanded ? interactions : interactions.slice(-3);
   const recent = queryRecord ? [queryRecord, ...recentInteractions] : recentInteractions;
   const sourceLabel =
     searchMeta?.source === "opensearch"
@@ -945,8 +949,8 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
           {Number.isFinite(searchMeta?.tookMs) ? ` ${searchMeta.tookMs} ms` : ""}
         </small>
       </div>
-      <ol>
-        {recent.map((event) => {
+      <ol id={`ubi-events-${queryId || "pending"}`}>
+        {recent.map((event, index) => {
           const isQuery = event.type === "query";
           const dslQuery =
             event.query_attributes?.query_plan?.dsl_query_json ??
@@ -954,7 +958,7 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
             event.query_attributes?.query_plan?.agentic?.dslQuery;
           const tooltipId = isQuery ? `ubi-dsl-${event.query_id}` : undefined;
           return (
-            <li key={`${event.timestamp}-${event.action_name || event.user_query}`}>
+            <li key={`${event.timestamp}-${event.action_name || event.user_query}-${index}`}>
               <span>{event.action_name || "query"}</span>
               {isQuery ? (
                 <div className="ubi-query-hover" tabIndex={0} aria-describedby={tooltipId}>
@@ -971,6 +975,17 @@ function UbiTelemetryPanel({ queryId, events, searchMeta }) {
           );
         })}
       </ol>
+      {interactions.length > 3 && (
+        <button
+          className="ubi-events-toggle"
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={`ubi-events-${queryId}`}
+          onClick={() => setExpandedQueryId(expanded ? null : queryId)}
+        >
+          {expanded ? "Show fewer interactions" : `Show all ${interactions.length} interactions`}
+        </button>
+      )}
     </section>
   );
 }

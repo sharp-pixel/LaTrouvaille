@@ -860,6 +860,24 @@ img {
   list-style: none;
 }
 
+.ubi-events-toggle {
+  grid-column: 1 / -1;
+  justify-self: start;
+  padding: 6px 9px;
+  border: 1px solid var(--soft-line);
+  border-radius: var(--radius-control);
+  background: white;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ubi-events-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
 .ubi-panel li {
   position: relative;
   display: inline-flex;

@@ -6,6 +6,8 @@ Keep vLLM-backed structured-output schema properties recursively alphabetized to
 
 Run the local server yourself and open the preview in the in-app browser. Do not give the user server-start instructions when you can run it.
 
+When the active UI is the Docker Compose app on port 5173, rebuild and recreate the app service after frontend changes (`docker compose up -d --build --no-deps app`) and verify the served bundle contains the change. A local Vite build or a separate dev server does not update that running app.
+
 Before making substantial visual changes, use the Product Design plugin's `get-context` skill when the visual source is unclear or no longer matches the current goal. When the user gives durable prototype-specific design feedback, preferences, or decisions, record them in `AGENTS.md`.
 
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
@@ -30,7 +32,7 @@ Use the approved studio product imagery in `public/assets/products/studio-v1/` f
 
 Cart listings are unique: the cart has no quantity controls, cannot contain the same listing twice, and starts empty on each fresh app load.
 
-The customer-facing UBI summary is scoped to the active query ID. Show the current query and only interactions linked to it; do not expose internal search-enhancement implementation details such as Querqy or Agentic Search status. Hovering or keyboard-focusing the current UBI query must reveal the actual OpenSearch DSL in a readable popup.
+The customer-facing UBI summary is scoped to the active query ID. Show the current query and only interactions linked to it; do not expose internal search-enhancement implementation details such as Querqy or Agentic Search status. Keep the compact preview of three latest interactions, with a counted Show all control to expand every retained interaction for the active query. Display the query first and interactions left to right in increasing timestamp order in both views; preserve recording order for equal timestamps. Hovering or keyboard-focusing the current UBI query must reveal the actual OpenSearch DSL in a readable popup.
 
 Record UBI queries only from the completed search request's own response, including model-pipeline changes; ignore cancelled responses and keep pending interactions unlinked. Browser telemetry must fall back to bounded in-memory storage if localStorage is unavailable, full, or malformed. Keep the latest query within the 40-record history so its DSL stays inspectable during long interaction sessions; filter by query ID before limiting visible interactions. Persist executed DSL as the JSON string `query_attributes.query_plan.dsl_query_json`; retain read support for legacy `dslQuery` records without reusing their potentially object-valued index mapping. Run `npm test` for the Node and React lifecycle regressions in addition to the production build.
 

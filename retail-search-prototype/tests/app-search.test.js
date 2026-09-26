@@ -48,6 +48,7 @@ async function mountApp(t) {
   });
   await act(async () => { renderer = create(createElement(App)); });
   return {
+    node: (name) => renderer.root.find((node) => node.type?.name === name),
     props: (name) => renderer.root.find((node) => node.type?.name === name).props,
     records: () => JSON.parse(storage.get("maison-reuse-ubi-events") || "[]").filter((r) => r.type === "query"),
     requests,
@@ -115,11 +116,29 @@ test("the active query remains inspectable beyond the bounded interaction histor
   await app.answer(app.requests[0], "bag-result");
   const product = app.props("ResultsPage").products[0];
   for (let index = 0; index < 45; index += 1) {
-    await act(async () => app.props("ResultsPage").toggleFavorite(product.id, product, 1));
+    await act(async () => app.props("ResultsPage").toggleFavorite(product.id, { ...product, item_id: `bag-${index}` }, 1));
   }
   const panel = app.props("UbiTelemetryPanel");
   assert.equal(panel.events.length, 40);
   assert.ok(panel.events.some((event) => event.type === "query" && event.query_id === panel.queryId));
+  const panelNode = app.node("UbiTelemetryPanel");
+  assert.equal(panelNode.findAllByType("li").length, 4);
+  const visibleLabels = () => panelNode.findAllByType("li").map((node) => node.findByType("b").children[0]);
+  assert.deepEqual(visibleLabels(), ["bags", "bag-42", "bag-43", "bag-44"]);
+  const toggle = panelNode.findByType("button");
+  assert.deepEqual(toggle.children, ["Show all 39 interactions"]);
+  await act(async () => toggle.props.onClick());
+  assert.equal(toggle.props["aria-expanded"], true);
+  assert.equal(panelNode.findAllByType("li").length, 40);
+  assert.deepEqual(visibleLabels(), ["bags", ...Array.from({ length: 39 }, (_, index) => `bag-${index + 6}`)]);
+  assert.equal(panelNode.findByProps({ role: "tooltip" }).findByType("pre").children[0], JSON.stringify({ query: { match_all: {} } }, null, 2));
+  await act(async () => toggle.props.onClick());
+  assert.equal(panelNode.findAllByType("li").length, 4);
+  await act(async () => toggle.props.onClick());
+  await act(async () => app.props("Header").runSearch("watches"));
+  await app.answer(app.requests[1], "watch-result");
+  assert.equal(panelNode.findAllByType("li").length, 1);
+  assert.equal(panelNode.findAllByType("button").length, 0);
 });
 
 test("retry preserves search mode and controls without recording failed responses", async (t) => {
